@@ -50,10 +50,21 @@
 #define uint16 unsigned short
 #define uint8  unsigned char
 
+
+/**
+ * @brief function yuv_alloc reserves the necessary memory according to the video format
+ * 
+ * @param[in] width 	image width
+ * @param[in] height  	image height
+ * @param[in] depth    	image depth
+ * @param[in] format   	image format
+ * @param[in,out] frame structure that describes the image
+ * @return !frame->Y 	return 1 if the memory allocation of the frame works
+ */
 int yuv_alloc(int width, int height, int depth, int format, yuv* frame)
 {
 	int size;
-	int sz = (depth == 8) ? 1 : 2;
+	int sz = (depth == 8) ? 1 : 2; 		// If we are not on 8 bits (1bytes) it's on 16 so 2 bytes
 	int height2, cheight2;
 	int subx = (format > YUV_422) ? 1 : 2;
 	int suby = (format > YUV_420) ? 1 : 2;
@@ -85,6 +96,11 @@ int yuv_alloc(int width, int height, int depth, int format, yuv* frame)
 	return !frame->Y;
 }
 
+/**
+ * @brief the function yuv_free free the memory allocate in yuv_alloc
+ * 
+ * @param[in,out] frame structure that describes the image
+ */
 void yuv_free(yuv* frame)
 {
 	_mm_free(frame->Y);
@@ -93,6 +109,18 @@ void yuv_free(yuv* frame)
 	frame->V = NULL;
 }
 
+/**
+ * @brief Depending on the size in bits of the image, we add the padding in height and width of the component. 
+ * This allows memory alignment.
+ * 
+ * @param[in] buffer 
+ * @param[in] width image width
+ * @param[in] height image height
+ * @param[in] stride frame stride 
+ * @param[in] walign corresponging to ALIGN_SIZE or ALIGN_SIZE/2
+ * @param[in] halign corresponging to ALIGN_SIZE or ALIGN_SIZE/2
+ * @param[in] depth image depth
+ */
 static void yuv_pad_comp(void* buffer, int width, int height, int stride, int walign, int halign, int depth)
 {
 	uint8*  buf8  = (uint8* )buffer;
@@ -108,13 +136,13 @@ static void yuv_pad_comp(void* buffer, int width, int height, int stride, int wa
 
 	if (depth==8)
 	{
-		for (i=0; i<height; i++)
+		for (i=0; i<height; i++)	//Add padding width
 		{
 			for (k=width; k<width2; k++)
 				buf8[k] = buf8[width-1];
 			buf8 += stride;
 		}
-		for (;i<height2; i++)
+		for (;i<height2; i++)		//Add padding height
 		{
 			for (k=0; k<stride; k++)
 				buf8[k] = buf8[k-stride];
@@ -123,13 +151,13 @@ static void yuv_pad_comp(void* buffer, int width, int height, int stride, int wa
 	}
 	else
 	{
-		for (i=0; i<height; i++)
+		for (i=0; i<height; i++)	//Add padding width
 		{
 			for (k=width; k<width2; k++)
 				buf16[k] = buf16[width-1];
 			buf16 += stride;
 		}
-		for (;i<height2; i++)
+		for (;i<height2; i++)	//Add padding height
 		{
 			for (k=0; k<stride; k++)
 				buf16[k] = buf16[k-stride];
@@ -138,6 +166,11 @@ static void yuv_pad_comp(void* buffer, int width, int height, int stride, int wa
 	}
 }
 
+/**
+ * @brief Depending on the size in bits of the image, we add the padding in height and width by component. 
+ * 
+ * @param[in,out] frame 
+ */
 void yuv_pad(yuv* frame)
 {
 	int subx = (frame->width == frame->cwidth) ? 1 : 2;
@@ -148,6 +181,18 @@ void yuv_pad(yuv* frame)
 	yuv_pad_comp(frame->V, frame->cwidth, frame->cheight, frame->cstride, ALIGN_SIZE/subx, ALIGN_SIZE/suby, frame->depth);
 }
 
+/**
+ * @brief generic function that will read the components 
+ * error if the number of bytes is different from the width 
+ * 
+ * @param[in] buffer 
+ * @param[in] file 
+ * @param[in] width 
+ * @param[in] height 
+ * @param[in] stride 
+ * @param[in] depth 
+ * @return int error if the number of bytes is different from the width 
+ */
 static int yuv_read_comp(void* buffer, FILE* file, int width, int height, int stride, int depth)
 {
 	uint8* buf8 = buffer;
@@ -166,6 +211,13 @@ static int yuv_read_comp(void* buffer, FILE* file, int width, int height, int st
 	return err;
 }
 
+/**
+ * @brief the function read the video and verify if there is no error in each image composition at each frame
+ * 
+ * @param[in, out] frame 
+ * @param[in] file 
+ * @return int error if any component failed
+ */
 int yuv_read(yuv* frame, FILE* file)
 {
 	int err = 0;
@@ -175,6 +227,17 @@ int yuv_read(yuv* frame, FILE* file)
 	return err;
 }
 
+/**
+ * @brief generic function that will write the components 
+ * 
+ * @param[in] buffer 
+ * @param[out] file 
+ * @param[in] width 
+ * @param[in] height 
+ * @param[in] stride 
+ * @param[in] depth 
+ * @return int error if the number of bytes is different from the width 
+ */
 static int yuv_write_comp(void* buffer, FILE* file, int width, int height, int stride, int depth)
 {
 	uint8* buf8 = buffer;
@@ -193,6 +256,13 @@ static int yuv_write_comp(void* buffer, FILE* file, int width, int height, int s
 	return err;
 }
 
+/**
+ * @brief this function is used to write to the file
+ * 
+ * @param[in, out] frame 
+ * @param[out] file 
+ * @return int error if any component failed
+ */
 int yuv_write(yuv* frame, FILE* file)
 {
 	int err = 0;
