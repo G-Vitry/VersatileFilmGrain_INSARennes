@@ -280,7 +280,12 @@ static const uint32 Seed_LUT[256] = {
 static const int8 DCT2_64[64][64] = \
   DEFINE_DCT2_P64_MATRIX(64, 83, 36, 89, 75, 50, 18, 90, 87, 80, 70, 57, 43, 25, 9, 90, 90, 88, 85, 82, 78, 73, 67, 61, 54, 46, 38, 31, 22, 13, 4, 91, 90, 90, 90, 88, 87, 86, 84, 83, 81, 79, 77, 73, 71, 69, 65, 62, 59, 56, 52, 48, 44, 41, 37, 33, 28, 24, 20, 15, 11, 7, 2);
 
-/** Pseudo-random number generator (32-bit) */
+/**
+ * @brief Pseudo-random number generator (32-bit)
+ * 
+ * @param x 
+ * @return uint32 
+ */
 static uint32 prng(uint32 x)
 {
 #if 1 // same as HW (bit-reversed RDD-5)
@@ -293,7 +298,14 @@ static uint32 prng(uint32 x)
 	return x;
 }
 
-/** Apply iDCT2 to block B[64][64] + clipping */
+/**
+ * @brief Apply iDCT2 to block B[64][64] + clipping
+ * 
+ * 1st pass (DCT2_64'*B) = vertical
+ * 2nd pass (...)*DCT2_64 = horizontal + clipping
+ * 
+ * @param B block B[64][64]
+ */
 static void idct2_64(int8 B[][64])
 {
 	int16 X[64][64];
@@ -326,7 +338,14 @@ static void idct2_64(int8 B[][64])
 		}
 }
 
-/** Apply iDCT2 to block B[32][32] + clipping */
+/**
+ * @brief Apply iDCT2 to block B[32][32] + clipping
+ * 
+ * 1st pass (R32'*B) = vertical
+ * 2nd pass (...)*R32 = horizontal + clipping 
+ * 
+ * @param B 
+ */
 static void idct2_32(int8 B[][32])
 {
 	int16 X[32][32];
