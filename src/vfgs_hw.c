@@ -67,7 +67,12 @@ static int csuby = 2;
 static int16 grain[3][32]; // 9 bit needed because of overlap (has norm > 1)
 static uint8 scale[3][32];
 
-/** Pseudo-random number generator */
+/**
+ * @brief Pseudo-random number generator
+ * 
+ * @param x 
+ * @return uint32 
+ */
 static uint32 prng(uint32 x)
 {
 	uint32 s = ((x << 30) ^ (x << 2)) & 0x80000000;
@@ -75,9 +80,8 @@ static uint32 prng(uint32 x)
 	return x;
 }
 
-/** Derive Y x/y offsets from (random) number
- *
- * Bit fields are designed to minimize overlaps across color channels, to
+/**
+ * @brief Bit fields are designed to minimize overlaps across color channels, to
  * decorrelate them as much as possible.
  *
  * 10-bit for 12 or 13 bins makes a reasonably uniform distribution (1.2%
@@ -92,6 +96,12 @@ static uint32 prng(uint32 x)
  *
  * Note: to fully support cross-component correlation within patterns, we would
  * need to align luma/chroma offsets.
+ * 
+ * @param rnd pseudo random number
+ * @param s	random sign flip
+ * @param x x offset
+ * @param y y offset
+ * 
  */
 static void get_offset_y(uint32 rnd, int *s, uint8 *x, uint8 *y)
 {
@@ -108,6 +118,10 @@ static void get_offset_y(uint32 rnd, int *s, uint8 *x, uint8 *y)
 	// pattern samples (when using overlap).
 }
 
+/**
+ * @brief brief is the same as get_offset_y
+ *
+ */
 static void get_offset_u(uint32 rnd, int *s, uint8 *x, uint8 *y)
 {
 	uint32 bf; // bit field
@@ -121,6 +135,10 @@ static void get_offset_u(uint32 rnd, int *s, uint8 *x, uint8 *y)
 	*y = ((bf * 12) >> 10) * (4/csuby);
 }
 
+/**
+ * @brief brief is the same as get_offset_y
+ *
+ */
 static void get_offset_v(uint32 rnd, int *s, uint8 *x, uint8 *y)
 {
 	uint32 bf; // bit field
@@ -282,10 +300,20 @@ static void add_grain_block(void* I, int c, int x, int y, int width)
 
 /* Public interface ***********************************************************/
 
+/**
+ * @brief add grain on a line 
+ * the backup is used for the overlapping detection to have the right offset
+ * 
+ * @param Y luma
+ * @param U Cb
+ * @param V Cr
+ * @param y line 
+ * @param width 
+ */
 void vfgs_add_grain_line(void* Y, void* U, void* V, int y, int width)
 {
 	// Generate / backup / restore per-line random seeds (needed to make multi-line blocks)
-	if (y && (y & 0x0f) == 0)
+	if (y && (y & 0x0f) == 0) 		// y > 15
 	{
 		// new line of blocks --> backup + copy current to upper
 		line_rnd_up = line_rnd;
@@ -308,12 +336,25 @@ void vfgs_add_grain_line(void* Y, void* U, void* V, int y, int width)
 	}
 }
 
+/**
+ * @brief copy block of 64*64 of P in pattern at index 
+ * 
+ * @param index 
+ * @param P block 64*64 forced in this function
+ */
 void vfgs_set_luma_pattern(int index, int8* P)
 {
 	assert(index >= 0 && index < 8);
 	memcpy(pattern[0][index], P, 64*64);
 }
 
+/**
+ * @brief depending on the YUV format (chroma subsampling) 
+ * copy grain pattern in pattern at index i 
+ * 
+ * @param index 
+ * @param P 
+ */
 void vfgs_set_chroma_pattern(int index, int8 *P)
 {
 	assert(index >= 0 && index < 8);
@@ -321,6 +362,15 @@ void vfgs_set_chroma_pattern(int index, int8 *P)
 		memcpy(pattern[1][index][i], P + (64/csuby)*i, 64/csubx);
 }
 
+/**
+ * @brief a function that scales the film grain based on
+ * the value of the luma
+ * 
+ * Define the LUT based on the configuration (SEI Message)
+ * 
+ * @param c Y or U or V component 
+ * @param lut 
+ */
 void vfgs_set_scale_lut(int c, uint8 lut[])
 {
 	assert(c>=0 && c<3);
@@ -333,16 +383,28 @@ void vfgs_set_pattern_lut(int c, uint8 lut[])
 	memcpy(pLUT[c], lut, 256);
 }
 
+/**
+ * @brief Initialization/Reset of all random values
+ * 
+ * @param seed 
+ */
 void vfgs_set_seed(uint32 seed)
 {
 	rnd = rnd_up = line_rnd = line_rnd_up = seed;
 }
 
+/**
+ * @brief Bit depth higher than 8 is supported, by scaling the film grain appropriately; for example, for
+ * 10-bit video, film grain is shifted left 2 bits before blending.
+ * 
+ * @param shift 
+ */
 void vfgs_set_scale_shift(int shift)
 {
 	assert(shift >= 2 && shift < 8);
 	scale_shift = shift + 6 - bs;
 }
+
 
 void vfgs_set_depth(int depth)
 {
@@ -355,6 +417,7 @@ void vfgs_set_depth(int depth)
 
 	bs = depth - 8;
 }
+
 
 void vfgs_set_chroma_subsampling(int subx, int suby)
 {
