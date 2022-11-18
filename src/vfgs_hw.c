@@ -152,6 +152,17 @@ static void get_offset_v(uint32 rnd, int *s, uint8 *x, uint8 *y)
 	*y = ((bf * 12) >> 10) * (4/csuby);
 }
 
+/**
+ * @brief Used to add grain to the video, taking into account all the memory alignment elements and LUTs that are initialized. 
+ * Keeps in memory the randoms to detect and process overlapping. 
+ * The most time consuming function.
+ * 
+ * @param I 
+ * @param c 
+ * @param x 
+ * @param y 
+ * @param width 
+ */
 static void add_grain_block(void* I, int c, int x, int y, int width)
 {
 	uint8 *I8 = (uint8*)I;
@@ -405,7 +416,12 @@ void vfgs_set_scale_shift(int shift)
 	scale_shift = shift + 6 - bs;
 }
 
-
+/**
+ * @brief The depth can be on 8 or 10 bits. In order to have the depth metadata on 8 or 10 bits you have 
+ * to multiply everything by 4, hence adding or subtracting 2 to the offset.
+ * 
+ * @param depth 
+ */
 void vfgs_set_depth(int depth)
 {
 	assert(depth==8 || depth==10);
@@ -418,7 +434,12 @@ void vfgs_set_depth(int depth)
 	bs = depth - 8;
 }
 
-
+/**
+ * @brief set chroma subsampling
+ * 
+ * @param subx 
+ * @param suby 
+ */
 void vfgs_set_chroma_subsampling(int subx, int suby)
 {
 	assert(subx==1 || subx==2);
