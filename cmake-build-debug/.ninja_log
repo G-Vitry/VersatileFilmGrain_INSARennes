@@ -1,6 +1,0 @@
-# ninja log v5
-0	453	1669989413883567696	CMakeFiles/vfgs.dir/src/vfgs_fw.c.o	d7a1c971c54946b1
-0	454	1669989413883567696	CMakeFiles/vfgs.dir/src/vfgs_hw.c.o	75a4d36f7d3179e3
-0	454	1669989413883567696	CMakeFiles/vfgs.dir/src/vfgs_main.c.o	206df1419117f8f4
-453	504	1669989413935568147	CMakeFiles/vfgs.dir/src/yuv.c.o	628cd91d9475e15d
-504	570	1669989413999568702	vfgs	2c2a5542ccd7b0c7
