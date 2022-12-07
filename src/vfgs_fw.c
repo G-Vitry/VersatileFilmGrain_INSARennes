@@ -378,6 +378,13 @@ static void idct2_32(int8 B[][32])
 		}
 }
 
+/**
+ * @brief SEI pattern for 64*64 blocks
+ * 
+ * @param B 
+ * @param fh 
+ * @param fv 
+ */
 static void vfgs_make_sei_ff_pattern64(int8 B[][64], int fh, int fv)
 {
 	int k, l;
@@ -403,6 +410,13 @@ static void vfgs_make_sei_ff_pattern64(int8 B[][64], int fh, int fv)
 	idct2_64(B);
 }
 
+/**
+ * @brief SEI pattern for 32*32 blocks
+ * 
+ * @param B 
+ * @param fh 
+ * @param fv 
+ */
 static void vfgs_make_sei_ff_pattern32(int8 B[][32], int fh, int fv)
 {
 	int k, l;
@@ -426,6 +440,19 @@ static void vfgs_make_sei_ff_pattern32(int8 B[][32], int fh, int fv)
 	idct2_32(B);
 }
 
+/**
+ * @brief Auto-regressif pattern 
+ * 
+ * @param buf0 
+ * @param buf 
+ * @param P 
+ * @param size 
+ * @param ar_coef auto-regressif coefficient
+ * @param nb_coef 
+ * @param shift 
+ * @param scale 
+ * @param seed 
+ */
 void vfgs_make_ar_pattern(const int8* buf0, int8 buf[], int8 P[], int size, const int16 ar_coef[], int nb_coef, int shift, int scale, uint32 seed)
 {
 	int16 coef[4][7];
@@ -490,7 +517,11 @@ void vfgs_make_ar_pattern(const int8* buf0, int8 buf[], int8 P[], int size, cons
 			P[size*y+x] = buf[width*(3+6/suby+y) + (3+6/subx+x)];
 }
 
-/** Initialize "hardware" interface from FGS SEI parameters */
+/**
+ * @brief Initialize "hardware" interface from FGS SEI parameters 
+ * 
+ * @param cfg
+ */
 void vfgs_init_sei(fgs_sei* cfg)
 {
 	int8 P[64*64];
