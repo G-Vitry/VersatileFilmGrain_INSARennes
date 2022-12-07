@@ -48,6 +48,8 @@
 
 #define VFGS_MAX_PATTERNS 8
 
+
+
 void vfgs_set_luma_pattern(int index, int8* P);
 void vfgs_set_chroma_pattern(int index, int8 *P);
 void vfgs_set_scale_lut(int c, uint8 lut[]);
