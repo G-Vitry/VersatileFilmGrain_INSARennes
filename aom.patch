@@ -1,0 +1,337 @@
+diff --git a/src/vfgs_fw.c b/src/vfgs_fw.c
+index d88c0b4..9fb11b8 100644
+--- a/src/vfgs_fw.c
++++ b/src/vfgs_fw.c
+@@ -415,6 +415,7 @@ void vfgs_make_ar_pattern(const int8* buf0, int8 buf[], int8 P[], int size, cons
+ 	int g;
+ 	int subx, suby, width, height;
+ 	uint32 rnd = Seed_LUT[0]; // pull out (different for luma/chroma)
++	int cx = 0; // cross-compoenent coefficient
+ 
+ 	memset(coef, 0, sizeof(coef));
+ 	subx = suby = (size == 32) ? 2 : 1;
+@@ -434,6 +435,24 @@ void vfgs_make_ar_pattern(const int8* buf0, int8 buf[], int8 P[], int size, cons
+ 			L = 2;
+ 			break;
+ 
++		case 5:
++			cx = ar_coef[4];
++		case 4:
++			L = 1;
++			break;
++
++		case 13:
++			cx = ar_coef[12];
++		case 12:
++			L = 2;
++			break;
++
++		case 25:
++			cx = ar_coef[24];
++		case 24:
++			L = 3;
++			break;
++
+ 		default:
+ 			assert(0);
+ 	}
+@@ -454,6 +473,17 @@ void vfgs_make_ar_pattern(const int8* buf0, int8 buf[], int8 P[], int size, cons
+ 					for(i=-3; i<=3 && (i<0 || j<0); i++)
+ 						g += (int)coef[3+j][3+i] * buf[width*(y+j) + x+i];
+ 
++				// Add cross-component stuff
++				if (cx && buf0!=NULL)
++				{
++					i = (x-3)*subx + 3; // TODO: for SEI, take previous instead of luma ? --> not same size/subx/suby !
++					j = (y-3)*suby + 3;
++					int Z = buf0[width*subx*j + i];
++					if (subx>1) Z += buf0[width*subx*j + i+1];
++					if (suby>1) Z += buf0[width*subx*(j+1) + i] + buf0[width*subx*(j+1) + i+1];
++					g += cx * round(Z,subx+suby-2);
++				}
++				
+ 				g = round(g, scale);
+ 			}
+ 
+@@ -609,3 +639,67 @@ void vfgs_init_sei(fgs_sei* cfg)
+ 	vfgs_set_scale_shift(cfg->log2_scale_factor - (cfg->model_id ? 1 : 0)); // -1 for grain shift in pattern generation (see above)
+ }
+ 
++/* ****************************************************************************/
++
++/** Fill LUT from piecewise linear function */
++void vfgs_make_lut_piecewise_linear(uint8 lut[], const uint8 in[], const uint8 out[], int n)
++{
++	memset(lut, 0, 256);
++	for (int k=1; k<n; k++)
++	{
++		int din  = in[k] - in[k-1];
++		int dout = (int)out[k] - out[k-1];
++		assert(din > 0);
++		for (int i=0; i<=din; i++)
++			lut[in[k-1] + i] = out[k-1] + (dout * i + din/2) / din;
++	}
++}
++
++/** Initialize "hardware" interface from ITU-T T.35 AOM-registered metadata */
++void vfgs_init_mtdt(fgs_metadata* cfg)
++{
++	uint8 lut[256];
++	int8 P[64*64];
++	int8 Lbuf[73*82];
++	int8 Cbuf[38*44];
++	int n;
++
++	// set seed
++	vfgs_set_seed(cfg->grain_seed | ((uint32)cfg->grain_seed << 16));
++
++	// make luts
++	vfgs_make_lut_piecewise_linear(lut, cfg->point_y_values, cfg->point_y_scaling, cfg->num_y_points);
++	vfgs_set_scale_lut(0, lut);
++	if (!cfg->chroma_scaling_from_luma)
++		vfgs_make_lut_piecewise_linear(lut, cfg->point_cb_values, cfg->point_cb_scaling, cfg->num_cb_points);
++	vfgs_set_scale_lut(1, lut);
++	if (!cfg->chroma_scaling_from_luma)
++		vfgs_make_lut_piecewise_linear(lut, cfg->point_cr_values, cfg->point_cr_scaling, cfg->num_cr_points);
++	vfgs_set_scale_lut(2, lut);
++
++	// make AR patterns
++	// note on grain_scale_shift:
++	// - AOM spec uses grain_scale_shift+4 but has gaussian table with sigma = 512
++	// - since our table has sigma = 63, we just remove 3 shifts, which makes grain_scale_shift+1                          
++	n = 2 * cfg->ar_coeff_lag * (cfg->ar_coeff_lag + 1);
++	vfgs_make_ar_pattern(NULL, Lbuf, P, 64, cfg->ar_coeffs_y, n, cfg->grain_scale_shift+1, cfg->ar_coeff_shift, Seed_LUT[0]);
++	vfgs_set_luma_pattern(0, P);
++	memset(lut, 0, sizeof(lut));
++	vfgs_set_pattern_lut(0, lut);
++
++	vfgs_make_ar_pattern(Lbuf, Cbuf, P, 32, cfg->ar_coeffs_cb, n, cfg->grain_scale_shift+1, cfg->ar_coeff_shift, Seed_LUT[1]);
++	vfgs_set_chroma_pattern(0, P);
++	vfgs_set_pattern_lut(1, lut);
++
++	vfgs_make_ar_pattern(Lbuf, Cbuf, P, 32, cfg->ar_coeffs_cr, n, cfg->grain_scale_shift+1, cfg->ar_coeff_shift, Seed_LUT[2]);
++	vfgs_set_chroma_pattern(1, P);
++	memset(lut, 1, sizeof(lut));
++	vfgs_set_pattern_lut(2, lut);
++
++	vfgs_set_scale_shift(cfg->grain_scaling - 6);
++	vfgs_set_legal_range(cfg->clip_to_restricted_range);
++
++	// TODO: cb_mult/luma_mult/offset + same for cr
++	// TODO: overlap_flag (ignore ?)
++}
++
+diff --git a/src/vfgs_fw.h b/src/vfgs_fw.h
+index 0ada442..2d4382f 100644
+--- a/src/vfgs_fw.h
++++ b/src/vfgs_fw.h
+@@ -59,7 +59,37 @@ typedef struct fgs_sei_s {
+ 	int16 comp_model_value[3][256][SEI_MAX_MODEL_VALUES];
+ } fgs_sei;
+ 
++typedef struct fgs_metadata_s {
++	uint16 grain_seed;
++	uint8 num_y_points; /* 0..14 */
++	uint8 point_y_values[14]; /* shall be in increasing order */
++	uint8 point_y_scaling[14];
++	uint8 chroma_scaling_from_luma;
++	uint8 num_cb_points; /* 0..10 */
++	uint8 point_cb_values[10];
++	uint8 point_cb_scaling[10];
++	uint8 num_cr_points; /* 0..10 */
++	uint8 point_cr_values[10];
++	uint8 point_cr_scaling[10];
++	uint8 grain_scaling; /* 8..11 () */
++	uint8 ar_coeff_lag; /* 0..3 */
++	int16 ar_coeffs_y[24];  /* 16-bit to match comp_model_value, but only 8-bit signed is used here */
++	int16 ar_coeffs_cb[25]; /* Last value is a luma injection coefficient */
++	int16 ar_coeffs_cr[25];
++	uint8 ar_coeff_shift; /* 6..9 (AR coefficients scale down) */
++	uint8 grain_scale_shift; /* 0..3 (Gaussian random numbers scale down) */
++	uint8  cb_mult;
++	uint8  cb_luma_mult;
++	uint16 cb_offset; /* 9-bit */
++	uint8  cr_mult;
++	uint8  cr_luma_mult;
++	uint16 cr_offset; /* 9-bit */
++	uint8 overlap_flag;
++	uint8 clip_to_restricted_range;
++} fgs_metadata;
++
+ void vfgs_init_sei(fgs_sei* cfg);
++void vfgs_init_mtdt(fgs_metadata* cfg);
+ 
+ #endif  // _VFGS_FW_H_
+ 
+diff --git a/src/vfgs_hw.c b/src/vfgs_hw.c
+index 9051b08..4f53fba 100644
+--- a/src/vfgs_hw.c
++++ b/src/vfgs_hw.c
+@@ -356,6 +356,24 @@ void vfgs_set_depth(int depth)
+ 	bs = depth - 8;
+ }
+ 
++void vfgs_set_legal_range(int legal)
++{
++	if (legal)
++	{
++		Y_min = 16;
++		Y_max = 235;
++		C_min = 16;
++		C_max = 240;
++	}
++	else
++	{
++		Y_min = 0;
++		Y_max = 255;
++		C_min = 0;
++		C_max = 255;
++	}
++}
++
+ void vfgs_set_chroma_subsampling(int subx, int suby)
+ {
+ 	assert(subx==1 || subx==2);
+diff --git a/src/vfgs_hw.h b/src/vfgs_hw.h
+index c548eca..0bf5f80 100644
+--- a/src/vfgs_hw.h
++++ b/src/vfgs_hw.h
+@@ -56,6 +56,7 @@ void vfgs_set_pattern_lut(int c, uint8 lut[]);
+ void vfgs_set_seed(uint32 seed);
+ void vfgs_set_scale_shift(int shift);
+ void vfgs_set_depth(int depth);
++void vfgs_set_legal_range(int legal);
+ void vfgs_set_chroma_subsampling(int subx, int suby);
+ 
+ void vfgs_add_grain_line(void* Y, void* U, void* V, int y, int width);
+diff --git a/src/vfgs_main.c b/src/vfgs_main.c
+index d92ecf5..0d6a751 100644
+--- a/src/vfgs_main.c
++++ b/src/vfgs_main.c
+@@ -114,6 +114,24 @@ static fgs_sei sei = {
+ 	}
+ };
+ 
++static fgs_metadata mtdt = {
++	.num_y_points = 0,
++	// no other default values (default mode is SEI)
++};
++
++static int read_array_i16(int16* x, char* s)
++{
++	while (isdigit(*s) || *s=='-' || *s=='+')
++	{
++		*x++ = atoi(s);
++		while (isdigit(*s) || *s=='-' || *s=='+')
++			s++;
++		while (isblank(*s))
++			s++;
++	}
++	return 0;
++}
++
+ static int read_array_u8(uint8* x, char* s)
+ {
+ 	while (isdigit(*s))
+@@ -199,7 +217,7 @@ static int adjust_chroma_cfg()
+ 	return 0;
+ }
+ 
+-static int check_cfg()
++static int check_cfg_sei()
+ {
+ 	// Unsupported features
+ 	CHECK(format == YUV_420 || (!sei.comp_model_present_flag[1] && !sei.comp_model_present_flag[2]), "color grain currently not supported on yuv422 and yuv444 formats");
+@@ -236,6 +254,45 @@ static int check_cfg()
+ 	return 0;
+ }
+ 
++static int check_cfg_mtdt()
++{
++	int i, val;
++
++	// Unsupported features
++	CHECK(format == YUV_420 || (!mtdt.num_cb_points && !mtdt.num_cr_points), "color grain currently not supported on yuv422 and yuv444 formats");
++
++	// Check point_y_values are in increasing order
++	for (i=1, val=mtdt.point_y_values[0]; i < mtdt.num_y_points; i++)
++	{
++		CHECK(mtdt.point_y_values[i] > val, "AOMPointYValues shall be in increasing order"); 
++		val = mtdt.point_y_values[i];
++	}
++
++	// Check point_cb_values are in increasing order
++	for (i=1, val=mtdt.point_cb_values[0]; i < mtdt.num_cb_points; i++)
++	{
++		CHECK(mtdt.point_cb_values[i] > val, "AOMPointCbValues shall be in increasing order"); 
++		val = mtdt.point_cb_values[i];
++	}
++
++	// Check point_y_values are in increasing order
++	for (i=1, val=mtdt.point_cr_values[0]; i < mtdt.num_cr_points; i++)
++	{
++		CHECK(mtdt.point_cr_values[i] > val, "AOMPointCrValues shall be in increasing order"); 
++		val = mtdt.point_cr_values[i];
++	}
++
++	return 0;
++}
++
++static int check_cfg()
++{
++	if (mtdt.num_y_points)
++		return check_cfg_mtdt();
++	else
++		return check_cfg_sei();
++}
++
+ static int read_cfg(const char* filename)
+ {
+ 	FILE* cfg;
+@@ -311,6 +368,34 @@ static int read_cfg(const char* filename)
+ 			}
+ 		}
+ 		else if (!strcasecmp(s, "fg_characteristics_persistence_flag"))     { break; /* stop at the end of the first FGS SEI */ }
++
++		// AOM
++		else if (!strcasecmp(s, "AOMGrainSeed"))             { mtdt.grain_seed = atoi(v); }
++		else if (!strcasecmp(s, "AOMNumYPoints"))            { mtdt.num_y_points = atoi(v); CHECK(mtdt.num_y_points <= 14, "AOMNumYPoints higher than 14"); }
++		else if (!strcasecmp(s, "AOMPointYValues"))          { read_array_u8(mtdt.point_y_values, v); }
++		else if (!strcasecmp(s, "AOMPointYScaling"))         { read_array_u8(mtdt.point_y_scaling, v); }
++		else if (!strcasecmp(s, "AOMChromaScalingFromLuma")) { mtdt.chroma_scaling_from_luma = atoi(v); }
++		else if (!strcasecmp(s, "AOMNumCbPoints"))           { mtdt.num_cb_points = atoi(v); CHECK(mtdt.num_cb_points <= 10, "AOMNumCbPoints higher than 10"); }
++		else if (!strcasecmp(s, "AOMPointCbValues"))         { read_array_u8(mtdt.point_cb_values, v); }
++		else if (!strcasecmp(s, "AOMPointCbScaling"))        { read_array_u8(mtdt.point_cb_scaling, v); }
++		else if (!strcasecmp(s, "AOMNumCrPoints"))           { mtdt.num_cr_points = atoi(v); CHECK(mtdt.num_cr_points <= 10, "AOMNumCrPoints higher than 10"); }
++		else if (!strcasecmp(s, "AOMPointCrValues"))         { read_array_u8(mtdt.point_cr_values, v); }
++		else if (!strcasecmp(s, "AOMPointCrScaling"))        { read_array_u8(mtdt.point_cr_scaling, v); }
++		else if (!strcasecmp(s, "AOMGrainScaling"))          { mtdt.grain_scaling = atoi(v); CHECK(mtdt.grain_scaling >= 8 && mtdt.grain_scaling <= 11, "AOMGrainScaling out of 8..11 range"); }
++		else if (!strcasecmp(s, "AOMARCoeffLag"))            { mtdt.ar_coeff_lag = atoi(v); CHECK(mtdt.ar_coeff_lag <= 3, "AOMARCoeffLag higher than 3"); }
++		else if (!strcasecmp(s, "AOMARCoeffsY"))             { read_array_i16(mtdt.ar_coeffs_y, v); }
++		else if (!strcasecmp(s, "AOMARCoeffsCb"))            { read_array_i16(mtdt.ar_coeffs_cb, v); }
++		else if (!strcasecmp(s, "AOMARCoeffsCr"))            { read_array_i16(mtdt.ar_coeffs_cr, v); }
++		else if (!strcasecmp(s, "AOMARCoeffShift"))          { mtdt.ar_coeff_shift = atoi(v); CHECK(mtdt.ar_coeff_shift >= 6 && mtdt.ar_coeff_shift <= 9, "AOMARCoeffShift out of 6..9 range"); }
++		else if (!strcasecmp(s, "AOMGrainScaleShift"))       { mtdt.grain_scale_shift = atoi(v); CHECK(mtdt.grain_scale_shift <= 3, "AOMGrainScaleShift higher than 3"); }
++		else if (!strcasecmp(s, "AOMCbMult"))                { mtdt.cb_mult = atoi(v); }
++		else if (!strcasecmp(s, "AOMCbLumaMult"))            { mtdt.cb_luma_mult = atoi(v); }
++		else if (!strcasecmp(s, "AOMCbOffset"))              { mtdt.cb_offset = atoi(v); }
++		else if (!strcasecmp(s, "AOMCrMult"))                { mtdt.cr_mult = atoi(v); }
++		else if (!strcasecmp(s, "AOMCrLumaMult"))            { mtdt.cr_luma_mult = atoi(v); }
++		else if (!strcasecmp(s, "AOMCrOffset"))              { mtdt.cr_offset = atoi(v); }
++		else if (!strcasecmp(s, "AOMOverlapFlag"))           { mtdt.overlap_flag = atoi(v); }
++		else if (!strcasecmp(s, "AOMClipToRestrictedRange")) { mtdt.clip_to_restricted_range = atoi(v); }
+ 	}
+ 
+ 	return 0;
+@@ -406,7 +491,10 @@ int main(int argc, const char **argv)
+ 	vfgs_set_chroma_subsampling((format < YUV_444)?2:1, (format < YUV_422)?2:1);
+ 	adjust_chroma_cfg();
+ 
+-	vfgs_init_sei(&sei);
++	if (mtdt.num_y_points)
++		vfgs_init_mtdt(&mtdt);
++	else
++		vfgs_init_sei(&sei);
+ 
+ 	yuv_alloc(width, height, depth, format, &frame);
+ 
