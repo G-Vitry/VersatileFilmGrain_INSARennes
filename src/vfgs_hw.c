@@ -1234,13 +1234,13 @@ void vfgs_add_grain_stripe(void* Y, void* U, void* V, unsigned y, unsigned width
 	for (x=0; x<width; x+=16)
 	{
 		int s[3];
-		get_offset_y(rnd, &s[0], &offset_x[0][x/16], &offset_y[0][x/16]);
-		get_offset_u(rnd, &s[1], &offset_x[1][x/16], &offset_y[1][x/16]);
-		get_offset_v(rnd, &s[2], &offset_x[2][x/16], &offset_y[2][x/16]);
+		get_offset_y(rnd, &s[Y_index], &offset_x[Y_index][x/16], &offset_y[Y_index][x/16]);
+		get_offset_u(rnd, &s[U_index], &offset_x[U_index][x/16], &offset_y[U_index][x/16]);
+		get_offset_v(rnd, &s[V_index], &offset_x[V_index][x/16], &offset_y[V_index][x/16]);
 		rnd = prng(rnd);
-		sign[0][x/16] = s[0];
-		sign[1][x/16] = s[1];
-		sign[2][x/16] = s[2];
+		sign[Y_index][x/16] = s[Y_index];
+		sign[U_index][x/16] = s[U_index];
+		sign[V_index][x/16] = s[V_index];
 	}
 
 	// Compute stripe height (including overlap for next stripe)
@@ -1254,17 +1254,17 @@ void vfgs_add_grain_stripe(void* Y, void* U, void* V, unsigned y, unsigned width
 	{
 		for (x=0; x<width; x+=16)
 		{
-			int    s = sign[0][x/16];
-			uint8 ox = offset_x[0][x/16];
-			uint8 oy = offset_y[0][x/16];
+			int    s = sign[Y_index][x/16];
+			uint8 ox = offset_x[Y_index][x/16];
+			uint8 oy = offset_y[Y_index][x/16];
 			for (i=0; i<16; i++) // may overflow past right image border but no problem: allocated space is multiple of 16
 			{
 				uint8 intensity = bs ? I16[x+i] >> bs : I8[x+i];
-				uint8 pi = pLUT[0][intensity] >> 4; // pattern index (integer part) / TODO: try also with zero-shift
+				uint8 pi = pLUT[Y_index][intensity] >> 4; // pattern index (integer part) / TODO: try also with zero-shift
 				// TODO: assert(pi < VFGS_MAX_PATTERNS); // out of loop ?
 				uint8 P  = pattern[0][pi][oy + y][ox + i] * s; // We could consider just XORing the sign bit
 				grain_buf[y][x+i] = P;
-				scale_buf[y][x+i] = sLUT[0][intensity];
+				scale_buf[y][x+i] = sLUT[Y_index][intensity];
 			}
 		}
 		I8  += stride;
