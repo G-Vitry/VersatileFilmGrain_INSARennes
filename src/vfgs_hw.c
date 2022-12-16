@@ -498,3 +498,5 @@ void vfgs_set_chroma_subsampling(int subx, int suby)
 	csuby = suby;
 }
 
+//C'est modifié
+
