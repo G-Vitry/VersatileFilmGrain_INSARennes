@@ -42,7 +42,15 @@
 #define max(a,b) ((a)>(b)?(a):(b))
 #define round(a,s) (((a)+(1<<((s)-1)))>>(s))
 
+#define Y_index 0
+#define U_index 1
+#define V_index 2
+
 #define PATTERN_INTERPOLATION 0
+
+void (*ptr_add_grain_block_Y)(void* , int, int , int , int );
+void (*ptr_add_grain_block_U)(void* I, int, int , int , int );
+void (*ptr_add_grain_block_V)(void* I, int, int , int , int );
 
 // Note: declarations optimized for code readability; e.g. pattern storage in
 //       actual hardware implementation would differ significantly
@@ -280,6 +288,891 @@ static void add_grain_block(void* I, int c, int x, int y, int width)
 	} while (flush == 1);
 }
 
+static void add_grain_block_Y(void* I, int c, int x, int y, int width)
+{
+	uint8 *I8 = (uint8*)I;
+	uint16 *I16 = (uint16*)I;
+
+	int s, s_up;         // random sign flip (current + upper row)
+	uint8 ox, oy;        // random offset (current)
+	uint8 ox_up, oy_up;  // random offset (upper row)
+	uint8 oc1, oc2;      // overlapping coefficients
+	uint8 pi;            // pattern index integer part
+	int i, j;
+	int P;               // Pattern sample (from current pattern index)
+#if PATTERN_INTERPOLATION
+	int Pn;              // Next-pattern sample (from pattern index+1)
+	uint8 pf;            // pattern index fractional part
+#endif
+
+	uint8 intensity;
+	int flush = 0;
+	const int subx = 1;
+	const int suby = 1;
+
+	j = y & 0xf;
+
+	if (y > 15 && j == 0) // first line of overlap
+	{
+		oc1 = 12; // current
+		oc2 = 24; // upper
+	}
+	else if (y > 15 && j == 1) // second line of overlap
+	{
+		oc1 = 24;
+		oc2 = 12;
+	}
+	else
+	{
+		oc1 = oc2 = 0;
+	}
+
+	// Derive block offsets + sign
+	get_offset_y(rnd, &s, &ox, &oy);
+	oy += j/suby;
+
+	// Same for upper block (overlap)
+	get_offset_y(rnd_up, &s_up, &ox_up, &oy_up);
+	oy_up += (16 + j)/suby;
+
+	// Make grain pattern
+	for (i=0; i<16/subx; i++)
+	{
+		intensity = bs ? I16[x/subx+i] >> bs : I8[x/subx+i];
+		pi = pLUT[0][intensity] >> 4; // pattern index (integer part)
+#if PATTERN_INTERPOLATION
+		pf = pLUT[0][intensity] & 15; // fractional part (interpolate with next) -- could restrict to less bits (e.g. 2)
+#endif
+
+		// Pattern
+		P  = pattern[0][pi  ][oy][ox + i] * s; // We could consider just XORing the sign bit
+#if PATTERN_INTERPOLATION
+		Pn = pattern[0][pi+1][oy][ox + i] * s; // But there are equivalent hw tricks, e.g. storing values as sign + amplitude instead of two's complement
+#endif
+
+		if (oc1) // overlap
+		{
+			P  = round(P  * oc1 + pattern[0][pi  ][oy_up][ox_up + i] * oc2 * s_up, 5);
+#if PATTERN_INTERPOLATION
+			Pn = round(Pn * oc1 + pattern[0][pi+1][oy_up][ox_up + i] * oc2 * s_up, 5);
+#endif
+		}
+
+#if PATTERN_INTERPOLATION
+		// Pattern interpolation: P is current, Pn is next, pf is interpolation coefficient
+		grain[Y_index][16/subx+i] = round(P * (16-pf) + Pn * pf, 4);
+#else
+		grain[Y_index][16/subx+i] = P;
+#endif
+
+		// Scale sign already integrated above because of overlap
+		scale[Y_index][16/subx+i] = sLUT[Y_index][intensity];
+	}
+
+	// Scale & output
+	do
+	{
+		if (x > 0)
+		{
+			int32 g;
+			int16 l1, l0, r0, r1;
+
+			if (!flush)
+			{
+				// Horizontal deblock (across previous block)
+				l1 = grain[Y_index][16/subx -2];
+				l0 = grain[Y_index][16/subx -1];
+				r0 = grain[Y_index][16/subx +0];
+				r1 = grain[Y_index][16/subx +1];
+				grain[Y_index][16/subx -1] = round(l1 + 3*l0 + r0, 2);
+				grain[Y_index][16/subx +0] = round(l0 + 3*r0 + r1, 2);
+			}
+			for (i=0; i<16/subx; i++)
+			{
+				// Output previous block (or flush current)
+				g = round(scale[Y_index][i] * (int16)grain[Y_index][i], scale_shift);
+				if (bs)
+					I16[(x-16)/subx+i] = max(Y_min<<bs, min(Y_max<<bs, I16[(x-16)/subx+i] + g));
+				else
+					I8[(x-16)/subx+i] = max(Y_min, min(Y_max, I8[(x-16)/subx+i] + g));
+			}
+		}
+
+		// Shift pipeline
+		for (i=0; i<16/subx && !flush; i++)
+		{
+			grain[Y_index][i] = grain[Y_index][i+16/subx];
+			scale[Y_index][i] = scale[Y_index][i+16/subx];
+		}
+
+		if (x + 16 >= width)
+		{
+			flush ++;
+			x += 16;
+		}
+	} while (flush == 1);
+}
+
+static void add_grain_block_U420(void* I, int c, int x, int y, int width)
+{
+	uint8 *I8 = (uint8*)I;
+	uint16 *I16 = (uint16*)I;
+
+	int s, s_up;         // random sign flip (current + upper row)
+	uint8 ox, oy;        // random offset (current)
+	uint8 ox_up, oy_up;  // random offset (upper row)
+	uint8 oc1, oc2;      // overlapping coefficients
+	uint8 pi;            // pattern index integer part
+	int i, j;
+	int P;               // Pattern sample (from current pattern index)
+#if PATTERN_INTERPOLATION
+	int Pn;              // Next-pattern sample (from pattern index+1)
+	uint8 pf;            // pattern index fractional part
+#endif
+
+	uint8 intensity;
+	int flush = 0;
+	const int subx = 2;		//Format 420 
+	const int suby = 2;		//Format420
+	
+	if (y & 1)
+		return;
+
+	j = y & 0xf;
+
+	if (y > 15 && j == 0) // first line of overlap
+	{
+		oc1 = 20; // current
+		oc2 = 20; // upper
+	}
+	else if (y > 15 && j == 1) // second line of overlap
+	{
+		oc1 = 24;
+		oc2 = 12;
+	}
+	else
+	{
+		oc1 = oc2 = 0;
+	}
+	
+	get_offset_u(rnd, &s, &ox, &oy);
+	
+	oy += j/suby;
+	
+	get_offset_u(rnd_up, &s_up, &ox_up, &oy_up);
+	
+	for (i=0; i<16/subx; i++)
+	{
+		intensity = bs ? I16[x/2+i] >> bs : I8[x/2+i];
+		pi = pLUT[U_index][intensity] >> 4; // pattern index (integer part)
+#if PATTERN_INTERPOLATION
+		pf = pLUT[U_index][intensity] & 15; // fractional part (interpolate with next) -- could restrict to less bits (e.g. 2)
+#endif
+
+		// Pattern
+		P  = pattern[1][pi  ][oy][ox + i] * s; // We could consider just XORing the sign bit; 1 for chroma
+#if PATTERN_INTERPOLATION
+		Pn = pattern[1][pi+1][oy][ox + i] * s; // But there are equivalent hw tricks, e.g. storing values as sign + amplitude instead of two's complement;  1 for chroma
+#endif
+
+		if (oc1) // overlap
+		{
+			P  = round(P  * oc1 + pattern[1][pi  ][oy_up][ox_up + i] * oc2 * s_up, 5);
+#if PATTERN_INTERPOLATION
+			Pn = round(Pn * oc1 + pattern[1][pi+1][oy_up][ox_up + i] * oc2 * s_up, 5);
+#endif
+		}
+
+#if PATTERN_INTERPOLATION
+		// Pattern interpolation: P is current, Pn is next, pf is interpolation coefficient
+		grain[U_index][16/subx+i] = round(P * (16-pf) + Pn * pf, 4);
+#else
+		grain[U_index][16/subx+i] = P;
+#endif
+
+		// Scale sign already integrated above because of overlap
+		scale[U_index][16/subx+i] = sLUT[U_index][intensity];
+	}
+	
+
+	// Scale & output
+	do
+	{
+		if (x > 0)
+		{
+			int32 g;
+			int16 l1, l0, r0, r1;
+
+			if (!flush)
+			{
+				// Horizontal deblock (across previous block)
+				l1 = grain[U_index][16/subx -2];
+				l0 = grain[U_index][16/subx -1];
+				r0 = grain[U_index][16/subx +0];
+				r1 = grain[U_index][16/subx +1];
+				grain[U_index][16/subx -1] = round(l1 + 3*l0 + r0, 2);
+				grain[U_index][16/subx +0] = round(l0 + 3*r0 + r1, 2);
+			}
+			for (i=0; i<16/subx; i++)
+			{
+				// Output previous block (or flush current)
+				g = round(scale[U_index][i] * (int16)grain[U_index][i], scale_shift);
+				if (bs)
+					I16[(x-16)/subx+i] = max(C_min<<bs, min(C_max<<bs, I16[(x-16)/subx+i] + g));
+				else
+					I8[(x-16)/subx+i] = max(C_min, min(C_max, I8[(x-16)/subx+i] + g));
+			}
+		}
+
+		// Shift pipeline
+		for (i=0; i<16/subx && !flush; i++)
+		{
+			grain[U_index][i] = grain[U_index][i+16/subx];
+			scale[U_index][i] = scale[U_index][i+16/subx];
+		}
+
+		if (x + 16 >= width)
+		{
+			flush ++;
+			x += 16;
+		}
+	} while (flush == 1);
+}
+
+
+static void add_grain_block_V420(void* I, int c, int x, int y, int width)
+{
+	uint8 *I8 = (uint8*)I;
+	uint16 *I16 = (uint16*)I;
+
+	int s, s_up;         // random sign flip (current + upper row)
+	uint8 ox, oy;        // random offset (current)
+	uint8 ox_up, oy_up;  // random offset (upper row)
+	uint8 oc1, oc2;      // overlapping coefficients
+	uint8 pi;            // pattern index integer part
+	int i, j;
+	int P;               // Pattern sample (from current pattern index)
+#if PATTERN_INTERPOLATION
+	int Pn;              // Next-pattern sample (from pattern index+1)
+	uint8 pf;            // pattern index fractional part
+#endif
+
+	uint8 intensity;
+	int flush = 0;
+	const int subx = 2;		//Format 420 
+	const int suby = 2;		//Format420
+	
+	if (y & 1)
+		return;
+
+	j = y & 0xf;
+
+	if (y > 15 && j == 0) // first line of overlap
+	{
+		oc1 = 20; // current
+		oc2 = 20; // upper
+	}
+	else if (y > 15 && j == 1) // second line of overlap
+	{
+		oc1 = 24;
+		oc2 = 12;
+	}
+	else
+	{
+		oc1 = oc2 = 0;
+	}
+	
+	get_offset_v(rnd, &s, &ox, &oy);
+	
+	oy += j/suby;
+	
+	get_offset_v(rnd_up, &s_up, &ox_up, &oy_up);
+	
+	for (i=0; i<16/subx; i++)
+	{
+		intensity = bs ? I16[x/2+i] >> bs : I8[x/2+i];
+		pi = pLUT[V_index][intensity] >> 4; // pattern index (integer part)
+#if PATTERN_INTERPOLATION
+		pf = pLUT[V_index][intensity] & 15; // fractional part (interpolate with next) -- could restrict to less bits (e.g. 2)
+#endif
+
+		// Pattern
+		P  = pattern[1][pi  ][oy][ox + i] * s; // We could consider just XORing the sign bit; 1 for chroma
+#if PATTERN_INTERPOLATION
+		Pn = pattern[1][pi+1][oy][ox + i] * s; // But there are equivalent hw tricks, e.g. storing values as sign + amplitude instead of two's complement;  1 for chroma
+#endif
+
+		if (oc1) // overlap
+		{
+			P  = round(P  * oc1 + pattern[1][pi  ][oy_up][ox_up + i] * oc2 * s_up, 5);
+#if PATTERN_INTERPOLATION
+			Pn = round(Pn * oc1 + pattern[1][pi+1][oy_up][ox_up + i] * oc2 * s_up, 5);
+#endif
+		}
+
+#if PATTERN_INTERPOLATION
+		// Pattern interpolation: P is current, Pn is next, pf is interpolation coefficient
+		grain[V_index][16/subx+i] = round(P * (16-pf) + Pn * pf, 4);
+#else
+		grain[V_index][16/subx+i] = P;
+#endif
+
+		// Scale sign already integrated above because of overlap
+		scale[V_index][16/subx+i] = sLUT[V_index][intensity];
+	}
+	
+
+	// Scale & output
+	do
+	{
+		if (x > 0)
+		{
+			int32 g;
+			int16 l1, l0, r0, r1;
+
+			if (!flush)
+			{
+				// Horizontal deblock (across previous block)
+				l1 = grain[V_index][16/subx -2];
+				l0 = grain[V_index][16/subx -1];
+				r0 = grain[V_index][16/subx +0];
+				r1 = grain[V_index][16/subx +1];
+				grain[V_index][16/subx -1] = round(l1 + 3*l0 + r0, 2);
+				grain[V_index][16/subx +0] = round(l0 + 3*r0 + r1, 2);
+			}
+			for (i=0; i<16/subx; i++)
+			{
+				// Output previous block (or flush current)
+				g = round(scale[V_index][i] * (int16)grain[V_index][i], scale_shift);
+				if (bs)
+					I16[(x-16)/subx+i] = max(C_min<<bs, min(C_max<<bs, I16[(x-16)/subx+i] + g));
+				else
+					I8[(x-16)/subx+i] = max(C_min, min(C_max, I8[(x-16)/subx+i] + g));
+			}
+		}
+
+		// Shift pipeline
+		for (i=0; i<16/subx && !flush; i++)
+		{
+			grain[V_index][i] = grain[V_index][i+16/subx];
+			scale[V_index][i] = scale[V_index][i+16/subx];
+		}
+
+		if (x + 16 >= width)
+		{
+			flush ++;
+			x += 16;
+		}
+	} while (flush == 1);
+}
+
+
+static void add_grain_block_U422(void* I, int c, int x, int y, int width)
+{
+	uint8 *I8 = (uint8*)I;
+	uint16 *I16 = (uint16*)I;
+
+	int s, s_up;         // random sign flip (current + upper row)
+	uint8 ox, oy;        // random offset (current)
+	uint8 ox_up, oy_up;  // random offset (upper row)
+	uint8 oc1, oc2;      // overlapping coefficients
+	uint8 pi;            // pattern index integer part
+	int i, j;
+	int P;               // Pattern sample (from current pattern index)
+#if PATTERN_INTERPOLATION
+	int Pn;              // Next-pattern sample (from pattern index+1)
+	uint8 pf;            // pattern index fractional part
+#endif
+
+	uint8 intensity;
+	int flush = 0;
+	const int subx = 2;		//Format 422
+	const int suby = 1;		//Format422
+	
+	if (y & 1)
+		return;
+
+	j = y & 0xf;
+
+	if (y > 15 && j == 0) // first line of overlap
+	{
+		oc1 = 20; // current
+		oc2 = 20; // upper
+	}
+	else if (y > 15 && j == 1) // second line of overlap
+	{
+		oc1 = 24;
+		oc2 = 12;
+	}
+	else
+	{
+		oc1 = oc2 = 0;
+	}
+	
+	get_offset_u(rnd, &s, &ox, &oy);
+	
+	oy += j/suby;
+	
+	get_offset_u(rnd_up, &s_up, &ox_up, &oy_up);
+	
+	for (i=0; i<16/subx; i++)
+	{
+		intensity = bs ? I16[x/2+i] >> bs : I8[x/2+i];
+		pi = pLUT[U_index][intensity] >> 4; // pattern index (integer part)
+#if PATTERN_INTERPOLATION
+		pf = pLUT[U_index][intensity] & 15; // fractional part (interpolate with next) -- could restrict to less bits (e.g. 2)
+#endif
+
+		// Pattern
+		P  = pattern[1][pi  ][oy][ox + i] * s; // We could consider just XORing the sign bit; 1 for chroma
+#if PATTERN_INTERPOLATION
+		Pn = pattern[1][pi+1][oy][ox + i] * s; // But there are equivalent hw tricks, e.g. storing values as sign + amplitude instead of two's complement;  1 for chroma
+#endif
+
+		if (oc1) // overlap
+		{
+			P  = round(P  * oc1 + pattern[1][pi  ][oy_up][ox_up + i] * oc2 * s_up, 5);
+#if PATTERN_INTERPOLATION
+			Pn = round(Pn * oc1 + pattern[1][pi+1][oy_up][ox_up + i] * oc2 * s_up, 5);
+#endif
+		}
+
+#if PATTERN_INTERPOLATION
+		// Pattern interpolation: P is current, Pn is next, pf is interpolation coefficient
+		grain[U_index][16/subx+i] = round(P * (16-pf) + Pn * pf, 4);
+#else
+		grain[U_index][16/subx+i] = P;
+#endif
+
+		// Scale sign already integrated above because of overlap
+		scale[U_index][16/subx+i] = sLUT[U_index][intensity];
+	}
+	
+
+	// Scale & output
+	do
+	{
+		if (x > 0)
+		{
+			int32 g;
+			int16 l1, l0, r0, r1;
+
+			if (!flush)
+			{
+				// Horizontal deblock (across previous block)
+				l1 = grain[U_index][16/subx -2];
+				l0 = grain[U_index][16/subx -1];
+				r0 = grain[U_index][16/subx +0];
+				r1 = grain[U_index][16/subx +1];
+				grain[U_index][16/subx -1] = round(l1 + 3*l0 + r0, 2);
+				grain[U_index][16/subx +0] = round(l0 + 3*r0 + r1, 2);
+			}
+			for (i=0; i<16/subx; i++)
+			{
+				// Output previous block (or flush current)
+				g = round(scale[U_index][i] * (int16)grain[U_index][i], scale_shift);
+				if (bs)
+					I16[(x-16)/subx+i] = max(C_min<<bs, min(C_max<<bs, I16[(x-16)/subx+i] + g));
+				else
+					I8[(x-16)/subx+i] = max(C_min, min(C_max, I8[(x-16)/subx+i] + g));
+			}
+		}
+
+		// Shift pipeline
+		for (i=0; i<16/subx && !flush; i++)
+		{
+			grain[U_index][i] = grain[U_index][i+16/subx];
+			scale[U_index][i] = scale[U_index][i+16/subx];
+		}
+
+		if (x + 16 >= width)
+		{
+			flush ++;
+			x += 16;
+		}
+	} while (flush == 1);
+}
+
+
+static void add_grain_block_V422(void* I, int c, int x, int y, int width)
+{
+	uint8 *I8 = (uint8*)I;
+	uint16 *I16 = (uint16*)I;
+
+	int s, s_up;         // random sign flip (current + upper row)
+	uint8 ox, oy;        // random offset (current)
+	uint8 ox_up, oy_up;  // random offset (upper row)
+	uint8 oc1, oc2;      // overlapping coefficients
+	uint8 pi;            // pattern index integer part
+	int i, j;
+	int P;               // Pattern sample (from current pattern index)
+#if PATTERN_INTERPOLATION
+	int Pn;              // Next-pattern sample (from pattern index+1)
+	uint8 pf;            // pattern index fractional part
+#endif
+
+	uint8 intensity;
+	int flush = 0;
+	const int subx = 2;		//Format 422
+	const int suby = 1;		//Format422
+	
+	if (y & 1)
+		return;
+
+	j = y & 0xf;
+
+	if (y > 15 && j == 0) // first line of overlap
+	{
+		oc1 = 20; // current
+		oc2 = 20; // upper
+	}
+	else if (y > 15 && j == 1) // second line of overlap
+	{
+		oc1 = 24;
+		oc2 = 12;
+	}
+	else
+	{
+		oc1 = oc2 = 0;
+	}
+	
+	get_offset_v(rnd, &s, &ox, &oy);
+	
+	oy += j/suby;
+	
+	get_offset_v(rnd_up, &s_up, &ox_up, &oy_up);
+	
+	for (i=0; i<16/subx; i++)
+	{
+		intensity = bs ? I16[x/2+i] >> bs : I8[x/2+i];
+		pi = pLUT[V_index][intensity] >> 4; // pattern index (integer part)
+#if PATTERN_INTERPOLATION
+		pf = pLUT[V_index][intensity] & 15; // fractional part (interpolate with next) -- could restrict to less bits (e.g. 2)
+#endif
+
+		// Pattern
+		P  = pattern[1][pi  ][oy][ox + i] * s; // We could consider just XORing the sign bit; 1 for chroma
+#if PATTERN_INTERPOLATION
+		Pn = pattern[1][pi+1][oy][ox + i] * s; // But there are equivalent hw tricks, e.g. storing values as sign + amplitude instead of two's complement;  1 for chroma
+#endif
+
+		if (oc1) // overlap
+		{
+			P  = round(P  * oc1 + pattern[1][pi  ][oy_up][ox_up + i] * oc2 * s_up, 5);
+#if PATTERN_INTERPOLATION
+			Pn = round(Pn * oc1 + pattern[1][pi+1][oy_up][ox_up + i] * oc2 * s_up, 5);
+#endif
+		}
+
+#if PATTERN_INTERPOLATION
+		// Pattern interpolation: P is current, Pn is next, pf is interpolation coefficient
+		grain[V_index][16/subx+i] = round(P * (16-pf) + Pn * pf, 4);
+#else
+		grain[V_index][16/subx+i] = P;
+#endif
+
+		// Scale sign already integrated above because of overlap
+		scale[V_index][16/subx+i] = sLUT[V_index][intensity];
+	}
+	
+
+	// Scale & output
+	do
+	{
+		if (x > 0)
+		{
+			int32 g;
+			int16 l1, l0, r0, r1;
+
+			if (!flush)
+			{
+				// Horizontal deblock (across previous block)
+				l1 = grain[V_index][16/subx -2];
+				l0 = grain[V_index][16/subx -1];
+				r0 = grain[V_index][16/subx +0];
+				r1 = grain[V_index][16/subx +1];
+				grain[V_index][16/subx -1] = round(l1 + 3*l0 + r0, 2);
+				grain[V_index][16/subx +0] = round(l0 + 3*r0 + r1, 2);
+			}
+			for (i=0; i<16/subx; i++)
+			{
+				// Output previous block (or flush current)
+				g = round(scale[V_index][i] * (int16)grain[V_index][i], scale_shift);
+				if (bs)
+					I16[(x-16)/subx+i] = max(C_min<<bs, min(C_max<<bs, I16[(x-16)/subx+i] + g));
+				else
+					I8[(x-16)/subx+i] = max(C_min, min(C_max, I8[(x-16)/subx+i] + g));
+			}
+		}
+
+		// Shift pipeline
+		for (i=0; i<16/subx && !flush; i++)
+		{
+			grain[V_index][i] = grain[V_index][i+16/subx];
+			scale[V_index][i] = scale[V_index][i+16/subx];
+		}
+
+		if (x + 16 >= width)
+		{
+			flush ++;
+			x += 16;
+		}
+	} while (flush == 1);
+}
+
+static void add_grain_block_U444(void* I, int c, int x, int y, int width)
+{
+	uint8 *I8 = (uint8*)I;
+	uint16 *I16 = (uint16*)I;
+
+	int s, s_up;         // random sign flip (current + upper row)
+	uint8 ox, oy;        // random offset (current)
+	uint8 ox_up, oy_up;  // random offset (upper row)
+	uint8 oc1, oc2;      // overlapping coefficients
+	uint8 pi;            // pattern index integer part
+	int i, j;
+	int P;               // Pattern sample (from current pattern index)
+#if PATTERN_INTERPOLATION
+	int Pn;              // Next-pattern sample (from pattern index+1)
+	uint8 pf;            // pattern index fractional part
+#endif
+
+	uint8 intensity;
+	int flush = 0;
+	const int subx = 1;		//Format 444
+	const int suby = 1;		//Format444
+	
+	if (y & 1)
+		return;
+
+	j = y & 0xf;
+
+	if (y > 15 && j == 0) // first line of overlap
+	{
+		oc1 = 20; // current
+		oc2 = 20; // upper
+	}
+	else if (y > 15 && j == 1) // second line of overlap
+	{
+		oc1 = 24;
+		oc2 = 12;
+	}
+	else
+	{
+		oc1 = oc2 = 0;
+	}
+	
+	get_offset_u(rnd, &s, &ox, &oy);
+	
+	oy += j/suby;
+	
+	get_offset_u(rnd_up, &s_up, &ox_up, &oy_up);
+	
+	for (i=0; i<16/subx; i++)
+	{
+		intensity = bs ? I16[x/2+i] >> bs : I8[x/2+i];
+		pi = pLUT[U_index][intensity] >> 4; // pattern index (integer part)
+#if PATTERN_INTERPOLATION
+		pf = pLUT[U_index][intensity] & 15; // fractional part (interpolate with next) -- could restrict to less bits (e.g. 2)
+#endif
+
+		// Pattern
+		P  = pattern[1][pi  ][oy][ox + i] * s; // We could consider just XORing the sign bit; 1 for chroma
+#if PATTERN_INTERPOLATION
+		Pn = pattern[1][pi+1][oy][ox + i] * s; // But there are equivalent hw tricks, e.g. storing values as sign + amplitude instead of two's complement;  1 for chroma
+#endif
+
+		if (oc1) // overlap
+		{
+			P  = round(P  * oc1 + pattern[1][pi  ][oy_up][ox_up + i] * oc2 * s_up, 5);
+#if PATTERN_INTERPOLATION
+			Pn = round(Pn * oc1 + pattern[1][pi+1][oy_up][ox_up + i] * oc2 * s_up, 5);
+#endif
+		}
+
+#if PATTERN_INTERPOLATION
+		// Pattern interpolation: P is current, Pn is next, pf is interpolation coefficient
+		grain[U_index][16/subx+i] = round(P * (16-pf) + Pn * pf, 4);
+#else
+		grain[U_index][16/subx+i] = P;
+#endif
+
+		// Scale sign already integrated above because of overlap
+		scale[U_index][16/subx+i] = sLUT[U_index][intensity];
+	}
+	
+
+	// Scale & output
+	do
+	{
+		if (x > 0)
+		{
+			int32 g;
+			int16 l1, l0, r0, r1;
+
+			if (!flush)
+			{
+				// Horizontal deblock (across previous block)
+				l1 = grain[U_index][16/subx -2];
+				l0 = grain[U_index][16/subx -1];
+				r0 = grain[U_index][16/subx +0];
+				r1 = grain[U_index][16/subx +1];
+				grain[U_index][16/subx -1] = round(l1 + 3*l0 + r0, 2);
+				grain[U_index][16/subx +0] = round(l0 + 3*r0 + r1, 2);
+			}
+			for (i=0; i<16/subx; i++)
+			{
+				// Output previous block (or flush current)
+				g = round(scale[U_index][i] * (int16)grain[U_index][i], scale_shift);
+				if (bs)
+					I16[(x-16)/subx+i] = max(C_min<<bs, min(C_max<<bs, I16[(x-16)/subx+i] + g));
+				else
+					I8[(x-16)/subx+i] = max(C_min, min(C_max, I8[(x-16)/subx+i] + g));
+			}
+		}
+
+		// Shift pipeline
+		for (i=0; i<16/subx && !flush; i++)
+		{
+			grain[U_index][i] = grain[U_index][i+16/subx];
+			scale[U_index][i] = scale[U_index][i+16/subx];
+		}
+
+		if (x + 16 >= width)
+		{
+			flush ++;
+			x += 16;
+		}
+	} while (flush == 1);
+}
+
+
+static void add_grain_block_V444(void* I, int c, int x, int y, int width)
+{
+	uint8 *I8 = (uint8*)I;
+	uint16 *I16 = (uint16*)I;
+
+	int s, s_up;         // random sign flip (current + upper row)
+	uint8 ox, oy;        // random offset (current)
+	uint8 ox_up, oy_up;  // random offset (upper row)
+	uint8 oc1, oc2;      // overlapping coefficients
+	uint8 pi;            // pattern index integer part
+	int i, j;
+	int P;               // Pattern sample (from current pattern index)
+#if PATTERN_INTERPOLATION
+	int Pn;              // Next-pattern sample (from pattern index+1)
+	uint8 pf;            // pattern index fractional part
+#endif
+
+	uint8 intensity;
+	int flush = 0;
+	const int subx = 1;		//Format 444
+	const int suby = 1;		//Format444
+	
+	if (y & 1)
+		return;
+
+	j = y & 0xf;
+
+	if (y > 15 && j == 0) // first line of overlap
+	{
+		oc1 = 20; // current
+		oc2 = 20; // upper
+	}
+	else if (y > 15 && j == 1) // second line of overlap
+	{
+		oc1 = 24;
+		oc2 = 12;
+	}
+	else
+	{
+		oc1 = oc2 = 0;
+	}
+	
+	get_offset_v(rnd, &s, &ox, &oy);
+	
+	oy += j/suby;
+	
+	get_offset_v(rnd_up, &s_up, &ox_up, &oy_up);
+	
+	for (i=0; i<16/subx; i++)
+	{
+		intensity = bs ? I16[x/2+i] >> bs : I8[x/2+i];
+		pi = pLUT[V_index][intensity] >> 4; // pattern index (integer part)
+#if PATTERN_INTERPOLATION
+		pf = pLUT[V_index][intensity] & 15; // fractional part (interpolate with next) -- could restrict to less bits (e.g. 2)
+#endif
+
+		// Pattern
+		P  = pattern[1][pi  ][oy][ox + i] * s; // We could consider just XORing the sign bit; 1 for chroma
+#if PATTERN_INTERPOLATION
+		Pn = pattern[1][pi+1][oy][ox + i] * s; // But there are equivalent hw tricks, e.g. storing values as sign + amplitude instead of two's complement;  1 for chroma
+#endif
+
+		if (oc1) // overlap
+		{
+			P  = round(P  * oc1 + pattern[1][pi  ][oy_up][ox_up + i] * oc2 * s_up, 5);
+#if PATTERN_INTERPOLATION
+			Pn = round(Pn * oc1 + pattern[1][pi+1][oy_up][ox_up + i] * oc2 * s_up, 5);
+#endif
+		}
+
+#if PATTERN_INTERPOLATION
+		// Pattern interpolation: P is current, Pn is next, pf is interpolation coefficient
+		grain[V_index][16/subx+i] = round(P * (16-pf) + Pn * pf, 4);
+#else
+		grain[V_index][16/subx+i] = P;
+#endif
+
+		// Scale sign already integrated above because of overlap
+		scale[V_index][16/subx+i] = sLUT[V_index][intensity];
+	}
+	
+
+	// Scale & output
+	do
+	{
+		if (x > 0)
+		{
+			int32 g;
+			int16 l1, l0, r0, r1;
+
+			if (!flush)
+			{
+				// Horizontal deblock (across previous block)
+				l1 = grain[V_index][16/subx -2];
+				l0 = grain[V_index][16/subx -1];
+				r0 = grain[V_index][16/subx +0];
+				r1 = grain[V_index][16/subx +1];
+				grain[V_index][16/subx -1] = round(l1 + 3*l0 + r0, 2);
+				grain[V_index][16/subx +0] = round(l0 + 3*r0 + r1, 2);
+			}
+			for (i=0; i<16/subx; i++)
+			{
+				// Output previous block (or flush current)
+				g = round(scale[V_index][i] * (int16)grain[V_index][i], scale_shift);
+				if (bs)
+					I16[(x-16)/subx+i] = max(C_min<<bs, min(C_max<<bs, I16[(x-16)/subx+i] + g));
+				else
+					I8[(x-16)/subx+i] = max(C_min, min(C_max, I8[(x-16)/subx+i] + g));
+			}
+		}
+
+		// Shift pipeline
+		for (i=0; i<16/subx && !flush; i++)
+		{
+			grain[V_index][i] = grain[V_index][i+16/subx];
+			scale[V_index][i] = scale[V_index][i+16/subx];
+		}
+
+		if (x + 16 >= width)
+		{
+			flush ++;
+			x += 16;
+		}
+	} while (flush == 1);
+}
+
 /* Public interface ***********************************************************/
 
 void vfgs_add_grain_line(void* Y, void* U, void* V, int y, int width)
@@ -295,17 +1188,23 @@ void vfgs_add_grain_line(void* Y, void* U, void* V, int y, int width)
 	rnd = line_rnd;
 
 	// Process line
+	
 	for (int x=0; x<width; x+=16)
 	{
+		
 		// Process pixels for each color component
-		add_grain_block(Y, 0, x, y, width);
-		add_grain_block(U, 1, x, y, width);
-		add_grain_block(V, 2, x, y, width);
+		ptr_add_grain_block_Y(Y, 0, x, y, width);
+		ptr_add_grain_block_U(U, 1, x, y, width);
+		ptr_add_grain_block_V(V, 2, x, y, width);
+		
 
 		// Crank random generator
 		rnd = prng(rnd);
 		rnd_up = prng(rnd_up); // upper block (overlapping)
+		
 	}
+	
+	
 }
 
 void vfgs_set_luma_pattern(int index, int8* P)
@@ -380,5 +1279,24 @@ void vfgs_set_chroma_subsampling(int subx, int suby)
 	assert(suby==1 || suby==2);
 	csubx = subx;
 	csuby = suby;
+
+	if(subx == 2 && suby == 2)
+	{
+		ptr_add_grain_block_Y = add_grain_block_Y;
+		ptr_add_grain_block_U = add_grain_block_U420;
+		ptr_add_grain_block_V = add_grain_block_V420;
+	}
+	else if(subx == 2 && suby ==1)
+	{
+		ptr_add_grain_block_Y = add_grain_block_Y;
+		ptr_add_grain_block_U = add_grain_block_U422;
+		ptr_add_grain_block_V = add_grain_block_V422;
+	}
+	else
+	{
+		ptr_add_grain_block_Y = add_grain_block_Y;
+		ptr_add_grain_block_U = add_grain_block_U444;
+		ptr_add_grain_block_V = add_grain_block_V444;
+	}
 }
 
