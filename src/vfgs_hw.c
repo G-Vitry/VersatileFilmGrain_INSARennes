@@ -37,6 +37,7 @@
 #include "vfgs_hw.h"
 #include <string.h> // memcpy
 #include <assert.h>
+#include <stdio.h>
 
 #define min(a,b) ((a)<(b)?(a):(b))
 #define max(a,b) ((a)>(b)?(a):(b))
@@ -1215,12 +1216,13 @@ void vfgs_add_grain_line(void* Y, void* U, void* V, int y, int width)
 
 }
 
-void vfgs_add_grain_stripe(void* Y, void* U, void* V, unsigned y, unsigned width, unsigned height, unsigned stride)
+void vfgs_add_grain_stripe(void* Y, void* U, void* V, unsigned y, unsigned width, unsigned height, unsigned stride, unsigned cstride)
 {
 	unsigned x, i;
 	uint8 *I8;
 	uint16 *I16;
 	int overlap=0;
+	int y_base = 0;
 
 	// TODO could assert(height%16) if YUV memory is padded properly
 	assert(width>128 && width<=4096 && width<=stride);
@@ -1246,6 +1248,7 @@ void vfgs_add_grain_stripe(void* Y, void* U, void* V, unsigned y, unsigned width
 	// Compute stripe height (including overlap for next stripe)
 	overlap = (y > 0);
 	height = min(18, height-y);
+	y_base = y;
 
 	// Y: get grain & scale
 	I8 = (uint8*)Y;
@@ -1321,7 +1324,148 @@ void vfgs_add_grain_stripe(void* Y, void* U, void* V, unsigned y, unsigned width
 	}
 
 	// U
+	height = min(18, (height-y_base));
+	int stepy = csuby == 1 ? 1 : 2;
+	int stepx = csubx == 1 ? 1 : 2;
+	// U: get grain & scale
+	I8 = (uint8*)U;
+	I16 = (uint16*)U;
+	for (y=0; y<height; y+=stepy)
+	{
+		for (x=0; x<width; x+=16)
+		{
+			int    s = sign[U_index][x/16];
+			uint8 ox = offset_x[U_index][x/16];
+			uint8 oy = offset_y[U_index][x/16];
+			for (i=0; i<16; i+=stepx) // may overflow past right image border but no problem: allocated space is multiple of 16
+			{
+				uint8 intensity = bs ? I16[x+i] >> bs : I8[x+i];
+				uint8 pi = pLUT[U_index][intensity] >> 4; // pattern index (integer part) / TODO: try also with zero-shift
+				// TODO: assert(pi < VFGS_MAX_PATTERNS); // out of loop ?
+				uint8 P  = pattern[0][pi][oy + y][ox + i] * s; // We could consider just XORing the sign bit
+				grain_buf[y][x+i] = P;
+				scale_buf[y][x+i] = sLUT[U_index][intensity];
+			}
+		}
+		I8  += cstride;
+		I16 += cstride;
+	}
+	
+	//Vertical overlap
+	for (y=0; y<2 && overlap; y+=stepy)
+	{
+		uint8 oc1 = y ? 24 : 12; // current
+		uint8 oc2 = y ? 12 : 24; // previous
+		for (x=0; x<width; x+=stepx)
+		{
+			int16 g = round(oc1*grain_buf[y][x+i] + oc2*over_buf[y][x+i], 5);
+			grain_buf[y][x+i] = max(-127, min(+127, g));
+			over_buf[y][x+i] = grain_buf[y+16][x+i];
+		}
+	}
+	//Horizontal deblocking
+	for (y=0; y<16; y+=stepy)
+		for (x=16; x<width; x+=16)
+		{
+			int16 l1, l0, r0, r1;
+			l1 = grain_buf[y][x -2];
+			l0 = grain_buf[y][x -1];
+			r0 = grain_buf[y][x +0];
+			r1 = grain_buf[y][x +1];
+			l1 = round(l1 + 3*l0 + r0, 2); // left
+			r1 = round(l0 + 3*r0 + r1, 2); // right
+			grain_buf[y][x -1] = max(-127, min(+127, l1));
+			grain_buf[y][x +0] = max(-127, min(+127, r1));
+		}
+
+	height = min(16, height);
+	I8 = (uint8*)U;
+	I16 = (uint16*)U;
+	for (y=0; y<height; y+=stepy)
+	{
+		for (x=0; x<width; x+=stepx)
+		{
+			int32 g = round(scale_buf[y][x] * (int16)grain_buf[y][x], scale_shift);
+			if (bs)
+				I16[x] = max(C_min<<bs, min(C_max<<bs, I16[x] + g));
+			else
+				I8[x] = max(C_min, min(C_max, I8[x] + g));
+		}
+		I8  += cstride;
+		I16 += cstride;
+	}
+
+
 	// V
+	height = min(18, (height-y_base));
+	// V: get grain & scale
+	I8 = (uint8*)V;
+	I16 = (uint16*)V;
+	for (y=0; y<height; y+=stepy)
+	{
+		for (x=0; x<width; x+=16)
+		{
+			int    s = sign[V_index][x/16];
+			uint8 ox = offset_x[V_index][x/16];
+			uint8 oy = offset_y[V_index][x/16];
+			for (i=0; i<16; i+=stepx) // may overflow past right image border but no problem: allocated space is multiple of 16
+			{
+				uint8 intensity = bs ? I16[x+i] >> bs : I8[x+i];
+				uint8 pi = pLUT[V_index][intensity] >> 4; // pattern index (integer part) / TODO: try also with zero-shift
+				// TODO: assert(pi < VFGS_MAX_PATTERNS); // out of loop ?
+				uint8 P  = pattern[0][pi][oy + y][ox + i] * s; // We could consider just XORing the sign bit
+				grain_buf[y][x+i] = P;
+				scale_buf[y][x+i] = sLUT[V_index][intensity];
+			}
+		}
+		I8  += cstride;
+		I16 += cstride;
+	}
+	
+	//Vertical overlap
+	for (y=0; y<2 && overlap; y+=stepy)
+	{
+		uint8 oc1 = y ? 24 : 12; // current
+		uint8 oc2 = y ? 12 : 24; // previous
+		for (x=0; x<width; x+=stepx)
+		{
+			int16 g = round(oc1*grain_buf[y][x+i] + oc2*over_buf[y][x+i], 5);
+			grain_buf[y][x+i] = max(-127, min(+127, g));
+			over_buf[y][x+i] = grain_buf[y+16][x+i];
+		}
+	}
+	//Horizontal deblocking
+	for (y=0; y<16; y+=stepy)
+		for (x=16; x<width; x+=16)
+		{
+			int16 l1, l0, r0, r1;
+			l1 = grain_buf[y][x -2];
+			l0 = grain_buf[y][x -1];
+			r0 = grain_buf[y][x +0];
+			r1 = grain_buf[y][x +1];
+			l1 = round(l1 + 3*l0 + r0, 2); // left
+			r1 = round(l0 + 3*r0 + r1, 2); // right
+			grain_buf[y][x -1] = max(-127, min(+127, l1));
+			grain_buf[y][x +0] = max(-127, min(+127, r1));
+		}
+
+	height = min(16, height/csuby);
+	I8 = (uint8*)V;
+	I16 = (uint16*)V;
+	for (y=0; y<height; y++)
+	{
+		for (x=0; x<width; x++)
+		{
+			int32 g = round(scale_buf[y][x] * (int16)grain_buf[y][x], scale_shift);
+			if (bs){
+				//printf("X: %d \n", x);
+				I16[x] = max(C_min<<bs, min(C_max<<bs, I16[x] + g)); }
+			else
+				I8[x] = max(C_min, min(C_max, I8[x] + g));
+		}
+		I8  += cstride;
+		I16 += cstride;
+	}
 }
 
 void vfgs_set_luma_pattern(int index, int8* P)

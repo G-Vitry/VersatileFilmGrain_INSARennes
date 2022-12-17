@@ -436,7 +436,7 @@ static void vfgs_add_grain(yuv* frame)
 #else
 	for (int y=0; y<frame->height; y+=16)
 	{
-		vfgs_add_grain_stripe(Y, U, V, y, frame->width, frame->height, frame->stride);
+		vfgs_add_grain_stripe(Y, U, V, y, frame->width, frame->height, frame->stride, frame->cstride);
 		Y += 16*frame->stride * (depth > 8 ? 2 : 1);
 		if (frame->height == frame->cheight)
 		{
