@@ -151,1039 +151,6 @@ static void get_offset_v(uint32 rnd, int *s, uint8 *x, uint8 *y)
 	bf = (rnd >> 4) & 0x3ff;
 	*y = ((bf * 12) >> 10) * (4/csuby);
 }
-/*
-static void add_grain_block(void* I, int c, int x, int y, int width)
-{
-	uint8 *I8 = (uint8*)I;
-	uint16 *I16 = (uint16*)I;
-
-	int s, s_up;         // random sign flip (current + upper row)
-	uint8 ox, oy;        // random offset (current)
-	uint8 ox_up, oy_up;  // random offset (upper row)
-	uint8 oc1, oc2;      // overlapping coefficients
-	uint8 pi;            // pattern index integer part
-	int i, j;
-	int P;               // Pattern sample (from current pattern index)
-#if PATTERN_INTERPOLATION
-	int Pn;              // Next-pattern sample (from pattern index+1)
-	uint8 pf;            // pattern index fractional part
-#endif
-
-	uint8 intensity;
-	int flush = 0;
-	int subx = c ? csubx : 1;
-	int suby = c ? csuby : 1;
-	uint8 I_min = c ? C_min : Y_min;
-	uint8 I_max = c ? C_max : Y_max;
-
-	if ((y & 1) && suby > 1)
-		return;
-
-	assert(!(x & 15));
-	assert(width > 128);
-	assert(bs == 0 || bs == 2);
-	assert(scale_shift + bs >= 8 && scale_shift + bs <= 13);
-	// TODO: assert subx, suby, Y/C min/max, max pLUT values, etc
-
-	j = y & 0xf;
-
-	if (y > 15 && j == 0) // first line of overlap
-	{
-		oc1 = (suby > 1) ? 20 : 12; // current
-		oc2 = (suby > 1) ? 20 : 24; // upper
-	}
-	else if (y > 15 && j == 1) // second line of overlap
-	{
-		oc1 = 24;
-		oc2 = 12;
-	}
-	else
-	{
-		oc1 = oc2 = 0;
-	}
-
-	// Derive block offsets + sign
-	if (c==0)
-		get_offset_y(rnd, &s, &ox, &oy);
-	else if (c==1)
-		get_offset_u(rnd, &s, &ox, &oy);
-	else
-		get_offset_v(rnd, &s, &ox, &oy);
-	oy += j/suby;
-
-	// Same for upper block (overlap)
-	if (c==0)
-		get_offset_y(rnd_up, &s_up, &ox_up, &oy_up);
-	else if (c==1)
-		get_offset_u(rnd_up, &s_up, &ox_up, &oy_up);
-	else
-		get_offset_v(rnd_up, &s_up, &ox_up, &oy_up);
-	oy_up += (16 + j)/suby;
-
-	// Make grain pattern
-	for (i=0; i<16/subx; i++)
-	{
-		intensity = bs ? I16[x/subx+i] >> bs : I8[x/subx+i];
-		pi = pLUT[c][intensity] >> 4; // pattern index (integer part)
-#if PATTERN_INTERPOLATION
-		pf = pLUT[c][intensity] & 15; // fractional part (interpolate with next) -- could restrict to less bits (e.g. 2)
-#endif
-
-		// Pattern
-		P  = pattern[c?1:0][pi  ][oy][ox + i] * s; // We could consider just XORing the sign bit
-#if PATTERN_INTERPOLATION
-		Pn = pattern[c?1:0][pi+1][oy][ox + i] * s; // But there are equivalent hw tricks, e.g. storing values as sign + amplitude instead of two's complement
-#endif
-
-		if (oc1) // overlap
-		{
-			P  = round(P  * oc1 + pattern[c?1:0][pi  ][oy_up][ox_up + i] * oc2 * s_up, 5);
-#if PATTERN_INTERPOLATION
-			Pn = round(Pn * oc1 + pattern[c?1:0][pi+1][oy_up][ox_up + i] * oc2 * s_up, 5);
-#endif
-		}
-
-#if PATTERN_INTERPOLATION
-		// Pattern interpolation: P is current, Pn is next, pf is interpolation coefficient
-		grain[c][16/subx+i] = round(P * (16-pf) + Pn * pf, 4);
-#else
-		grain[c][16/subx+i] = P;
-#endif
-
-		// Scale sign already integrated above because of overlap
-		scale[c][16/subx+i] = sLUT[c][intensity];
-	}
-
-	// Scale & output
-	do
-	{
-		if (x > 0)
-		{
-			int32 g;
-			int16 l1, l0, r0, r1;
-
-			if (!flush)
-			{
-				// Horizontal deblock (across previous block)
-				l1 = grain[c][16/subx -2];
-				l0 = grain[c][16/subx -1];
-				r0 = grain[c][16/subx +0];
-				r1 = grain[c][16/subx +1];
-				grain[c][16/subx -1] = round(l1 + 3*l0 + r0, 2);
-				grain[c][16/subx +0] = round(l0 + 3*r0 + r1, 2);
-			}
-			for (i=0; i<16/subx; i++)
-			{
-				// Output previous block (or flush current)
-				g = round(scale[c][i] * (int16)grain[c][i], scale_shift);
-				if (bs)
-					I16[(x-16)/subx+i] = max(I_min<<bs, min(I_max<<bs, I16[(x-16)/subx+i] + g));
-				else
-					I8[(x-16)/subx+i] = max(I_min, min(I_max, I8[(x-16)/subx+i] + g));
-			}
-		}
-
-		// Shift pipeline
-		for (i=0; i<16/subx && !flush; i++)
-		{
-			grain[c][i] = grain[c][i+16/subx];
-			scale[c][i] = scale[c][i+16/subx];
-		}
-
-		if (x + 16 >= width)
-		{
-			flush ++;
-			x += 16;
-		}
-	} while (flush == 1);
-}
-
-
-static void add_grain_block_Y(void* I, int c, int x, int y, int width)
-{
-	uint8 *I8 = (uint8*)I;
-	uint16 *I16 = (uint16*)I;
-
-	int s, s_up;         // random sign flip (current + upper row)
-	uint8 ox, oy;        // random offset (current)
-	uint8 ox_up, oy_up;  // random offset (upper row)
-	uint8 oc1, oc2;      // overlapping coefficients
-	uint8 pi;            // pattern index integer part
-	int i, j;
-	int P;               // Pattern sample (from current pattern index)
-#if PATTERN_INTERPOLATION
-	int Pn;              // Next-pattern sample (from pattern index+1)
-	uint8 pf;            // pattern index fractional part
-#endif
-
-	uint8 intensity;
-	int flush = 0;
-	const int subx = 1;
-	const int suby = 1;
-
-	j = y & 0xf;
-
-	if (y > 15 && j == 0) // first line of overlap
-	{
-		oc1 = 12; // current
-		oc2 = 24; // upper
-	}
-	else if (y > 15 && j == 1) // second line of overlap
-	{
-		oc1 = 24;
-		oc2 = 12;
-	}
-	else
-	{
-		oc1 = oc2 = 0;
-	}
-
-	// Derive block offsets + sign
-	get_offset_y(rnd, &s, &ox, &oy);
-	oy += j/suby;
-
-	// Same for upper block (overlap)
-	get_offset_y(rnd_up, &s_up, &ox_up, &oy_up);
-	oy_up += (16 + j)/suby;
-
-	// Make grain pattern
-	for (i=0; i<16/subx; i++)
-	{
-		intensity = bs ? I16[x/subx+i] >> bs : I8[x/subx+i];
-		pi = pLUT[0][intensity] >> 4; // pattern index (integer part)
-#if PATTERN_INTERPOLATION
-		pf = pLUT[0][intensity] & 15; // fractional part (interpolate with next) -- could restrict to less bits (e.g. 2)
-#endif
-
-		// Pattern
-		P  = pattern[0][pi  ][oy][ox + i] * s; // We could consider just XORing the sign bit
-#if PATTERN_INTERPOLATION
-		Pn = pattern[0][pi+1][oy][ox + i] * s; // But there are equivalent hw tricks, e.g. storing values as sign + amplitude instead of two's complement
-#endif
-
-		if (oc1) // overlap
-		{
-			P  = round(P  * oc1 + pattern[0][pi  ][oy_up][ox_up + i] * oc2 * s_up, 5);
-#if PATTERN_INTERPOLATION
-			Pn = round(Pn * oc1 + pattern[0][pi+1][oy_up][ox_up + i] * oc2 * s_up, 5);
-#endif
-		}
-
-#if PATTERN_INTERPOLATION
-		// Pattern interpolation: P is current, Pn is next, pf is interpolation coefficient
-		grain[Y_index][16/subx+i] = round(P * (16-pf) + Pn * pf, 4);
-#else
-		grain[Y_index][16/subx+i] = P;
-#endif
-
-		// Scale sign already integrated above because of overlap
-		scale[Y_index][16/subx+i] = sLUT[Y_index][intensity];
-	}
-
-	// Scale & output
-	do
-	{
-		if (x > 0)
-		{
-			int32 g;
-			int16 l1, l0, r0, r1;
-
-			if (!flush)
-			{
-				// Horizontal deblock (across previous block)
-				l1 = grain[Y_index][16/subx -2];
-				l0 = grain[Y_index][16/subx -1];
-				r0 = grain[Y_index][16/subx +0];
-				r1 = grain[Y_index][16/subx +1];
-				grain[Y_index][16/subx -1] = round(l1 + 3*l0 + r0, 2);
-				grain[Y_index][16/subx +0] = round(l0 + 3*r0 + r1, 2);
-			}
-			for (i=0; i<16/subx; i++)
-			{
-				// Output previous block (or flush current)
-				g = round(scale[Y_index][i] * (int16)grain[Y_index][i], scale_shift);
-				if (bs)
-					I16[(x-16)/subx+i] = max(Y_min<<bs, min(Y_max<<bs, I16[(x-16)/subx+i] + g));
-				else
-					I8[(x-16)/subx+i] = max(Y_min, min(Y_max, I8[(x-16)/subx+i] + g));
-			}
-		}
-
-		// Shift pipeline
-		for (i=0; i<16/subx && !flush; i++)
-		{
-			grain[Y_index][i] = grain[Y_index][i+16/subx];
-			scale[Y_index][i] = scale[Y_index][i+16/subx];
-		}
-
-		if (x + 16 >= width)
-		{
-			flush ++;
-			x += 16;
-		}
-	} while (flush == 1);
-}
-
-static void add_grain_block_U420(void* I, int c, int x, int y, int width)
-{
-	uint8 *I8 = (uint8*)I;
-	uint16 *I16 = (uint16*)I;
-
-	int s, s_up;         // random sign flip (current + upper row)
-	uint8 ox, oy;        // random offset (current)
-	uint8 ox_up, oy_up;  // random offset (upper row)
-	uint8 oc1, oc2;      // overlapping coefficients
-	uint8 pi;            // pattern index integer part
-	int i, j;
-	int P;               // Pattern sample (from current pattern index)
-#if PATTERN_INTERPOLATION
-	int Pn;              // Next-pattern sample (from pattern index+1)
-	uint8 pf;            // pattern index fractional part
-#endif
-
-	uint8 intensity;
-	int flush = 0;
-	const int subx = 2;		//Format 420 
-	const int suby = 2;		//Format420
-	
-	if (y & 1)
-		return;
-
-	j = y & 0xf;
-
-	if (y > 15 && j == 0) // first line of overlap
-	{
-		oc1 = 20; // current
-		oc2 = 20; // upper
-	}
-	else if (y > 15 && j == 1) // second line of overlap
-	{
-		oc1 = 24;
-		oc2 = 12;
-	}
-	else
-	{
-		oc1 = oc2 = 0;
-	}
-	
-	get_offset_u(rnd, &s, &ox, &oy);
-	
-	oy += j/suby;
-	
-	get_offset_u(rnd_up, &s_up, &ox_up, &oy_up);
-	
-	for (i=0; i<16/subx; i++)
-	{
-		intensity = bs ? I16[x/2+i] >> bs : I8[x/2+i];
-		pi = pLUT[U_index][intensity] >> 4; // pattern index (integer part)
-#if PATTERN_INTERPOLATION
-		pf = pLUT[U_index][intensity] & 15; // fractional part (interpolate with next) -- could restrict to less bits (e.g. 2)
-#endif
-
-		// Pattern
-		P  = pattern[1][pi  ][oy][ox + i] * s; // We could consider just XORing the sign bit; 1 for chroma
-#if PATTERN_INTERPOLATION
-		Pn = pattern[1][pi+1][oy][ox + i] * s; // But there are equivalent hw tricks, e.g. storing values as sign + amplitude instead of two's complement;  1 for chroma
-#endif
-
-		if (oc1) // overlap
-		{
-			P  = round(P  * oc1 + pattern[1][pi  ][oy_up][ox_up + i] * oc2 * s_up, 5);
-#if PATTERN_INTERPOLATION
-			Pn = round(Pn * oc1 + pattern[1][pi+1][oy_up][ox_up + i] * oc2 * s_up, 5);
-#endif
-		}
-
-#if PATTERN_INTERPOLATION
-		// Pattern interpolation: P is current, Pn is next, pf is interpolation coefficient
-		grain[U_index][16/subx+i] = round(P * (16-pf) + Pn * pf, 4);
-#else
-		grain[U_index][16/subx+i] = P;
-#endif
-
-		// Scale sign already integrated above because of overlap
-		scale[U_index][16/subx+i] = sLUT[U_index][intensity];
-	}
-	
-
-	// Scale & output
-	do
-	{
-		if (x > 0)
-		{
-			int32 g;
-			int16 l1, l0, r0, r1;
-
-			if (!flush)
-			{
-				// Horizontal deblock (across previous block)
-				l1 = grain[U_index][16/subx -2];
-				l0 = grain[U_index][16/subx -1];
-				r0 = grain[U_index][16/subx +0];
-				r1 = grain[U_index][16/subx +1];
-				grain[U_index][16/subx -1] = round(l1 + 3*l0 + r0, 2);
-				grain[U_index][16/subx +0] = round(l0 + 3*r0 + r1, 2);
-			}
-			for (i=0; i<16/subx; i++)
-			{
-				// Output previous block (or flush current)
-				g = round(scale[U_index][i] * (int16)grain[U_index][i], scale_shift);
-				if (bs)
-					I16[(x-16)/subx+i] = max(C_min<<bs, min(C_max<<bs, I16[(x-16)/subx+i] + g));
-				else
-					I8[(x-16)/subx+i] = max(C_min, min(C_max, I8[(x-16)/subx+i] + g));
-			}
-		}
-
-		// Shift pipeline
-		for (i=0; i<16/subx && !flush; i++)
-		{
-			grain[U_index][i] = grain[U_index][i+16/subx];
-			scale[U_index][i] = scale[U_index][i+16/subx];
-		}
-
-		if (x + 16 >= width)
-		{
-			flush ++;
-			x += 16;
-		}
-	} while (flush == 1);
-}
-
-
-static void add_grain_block_V420(void* I, int c, int x, int y, int width)
-{
-	uint8 *I8 = (uint8*)I;
-	uint16 *I16 = (uint16*)I;
-
-	int s, s_up;         // random sign flip (current + upper row)
-	uint8 ox, oy;        // random offset (current)
-	uint8 ox_up, oy_up;  // random offset (upper row)
-	uint8 oc1, oc2;      // overlapping coefficients
-	uint8 pi;            // pattern index integer part
-	int i, j;
-	int P;               // Pattern sample (from current pattern index)
-#if PATTERN_INTERPOLATION
-	int Pn;              // Next-pattern sample (from pattern index+1)
-	uint8 pf;            // pattern index fractional part
-#endif
-
-	uint8 intensity;
-	int flush = 0;
-	const int subx = 2;		//Format 420 
-	const int suby = 2;		//Format420
-	
-	if (y & 1)
-		return;
-
-	j = y & 0xf;
-
-	if (y > 15 && j == 0) // first line of overlap
-	{
-		oc1 = 20; // current
-		oc2 = 20; // upper
-	}
-	else if (y > 15 && j == 1) // second line of overlap
-	{
-		oc1 = 24;
-		oc2 = 12;
-	}
-	else
-	{
-		oc1 = oc2 = 0;
-	}
-	
-	get_offset_v(rnd, &s, &ox, &oy);
-	
-	oy += j/suby;
-	
-	get_offset_v(rnd_up, &s_up, &ox_up, &oy_up);
-	
-	for (i=0; i<16/subx; i++)
-	{
-		intensity = bs ? I16[x/2+i] >> bs : I8[x/2+i];
-		pi = pLUT[V_index][intensity] >> 4; // pattern index (integer part)
-#if PATTERN_INTERPOLATION
-		pf = pLUT[V_index][intensity] & 15; // fractional part (interpolate with next) -- could restrict to less bits (e.g. 2)
-#endif
-
-		// Pattern
-		P  = pattern[1][pi  ][oy][ox + i] * s; // We could consider just XORing the sign bit; 1 for chroma
-#if PATTERN_INTERPOLATION
-		Pn = pattern[1][pi+1][oy][ox + i] * s; // But there are equivalent hw tricks, e.g. storing values as sign + amplitude instead of two's complement;  1 for chroma
-#endif
-
-		if (oc1) // overlap
-		{
-			P  = round(P  * oc1 + pattern[1][pi  ][oy_up][ox_up + i] * oc2 * s_up, 5);
-#if PATTERN_INTERPOLATION
-			Pn = round(Pn * oc1 + pattern[1][pi+1][oy_up][ox_up + i] * oc2 * s_up, 5);
-#endif
-		}
-
-#if PATTERN_INTERPOLATION
-		// Pattern interpolation: P is current, Pn is next, pf is interpolation coefficient
-		grain[V_index][16/subx+i] = round(P * (16-pf) + Pn * pf, 4);
-#else
-		grain[V_index][16/subx+i] = P;
-#endif
-
-		// Scale sign already integrated above because of overlap
-		scale[V_index][16/subx+i] = sLUT[V_index][intensity];
-	}
-	
-
-	// Scale & output
-	do
-	{
-		if (x > 0)
-		{
-			int32 g;
-			int16 l1, l0, r0, r1;
-
-			if (!flush)
-			{
-				// Horizontal deblock (across previous block)
-				l1 = grain[V_index][16/subx -2];
-				l0 = grain[V_index][16/subx -1];
-				r0 = grain[V_index][16/subx +0];
-				r1 = grain[V_index][16/subx +1];
-				grain[V_index][16/subx -1] = round(l1 + 3*l0 + r0, 2);
-				grain[V_index][16/subx +0] = round(l0 + 3*r0 + r1, 2);
-			}
-			for (i=0; i<16/subx; i++)
-			{
-				// Output previous block (or flush current)
-				g = round(scale[V_index][i] * (int16)grain[V_index][i], scale_shift);
-				if (bs)
-					I16[(x-16)/subx+i] = max(C_min<<bs, min(C_max<<bs, I16[(x-16)/subx+i] + g));
-				else
-					I8[(x-16)/subx+i] = max(C_min, min(C_max, I8[(x-16)/subx+i] + g));
-			}
-		}
-
-		// Shift pipeline
-		for (i=0; i<16/subx && !flush; i++)
-		{
-			grain[V_index][i] = grain[V_index][i+16/subx];
-			scale[V_index][i] = scale[V_index][i+16/subx];
-		}
-
-		if (x + 16 >= width)
-		{
-			flush ++;
-			x += 16;
-		}
-	} while (flush == 1);
-}
-
-
-static void add_grain_block_U422(void* I, int c, int x, int y, int width)
-{
-	uint8 *I8 = (uint8*)I;
-	uint16 *I16 = (uint16*)I;
-
-	int s, s_up;         // random sign flip (current + upper row)
-	uint8 ox, oy;        // random offset (current)
-	uint8 ox_up, oy_up;  // random offset (upper row)
-	uint8 oc1, oc2;      // overlapping coefficients
-	uint8 pi;            // pattern index integer part
-	int i, j;
-	int P;               // Pattern sample (from current pattern index)
-#if PATTERN_INTERPOLATION
-	int Pn;              // Next-pattern sample (from pattern index+1)
-	uint8 pf;            // pattern index fractional part
-#endif
-
-	uint8 intensity;
-	int flush = 0;
-	const int subx = 2;		//Format 422
-	const int suby = 1;		//Format422
-	
-	if (y & 1)
-		return;
-
-	j = y & 0xf;
-
-	if (y > 15 && j == 0) // first line of overlap
-	{
-		oc1 = 20; // current
-		oc2 = 20; // upper
-	}
-	else if (y > 15 && j == 1) // second line of overlap
-	{
-		oc1 = 24;
-		oc2 = 12;
-	}
-	else
-	{
-		oc1 = oc2 = 0;
-	}
-	
-	get_offset_u(rnd, &s, &ox, &oy);
-	
-	oy += j/suby;
-	
-	get_offset_u(rnd_up, &s_up, &ox_up, &oy_up);
-	
-	for (i=0; i<16/subx; i++)
-	{
-		intensity = bs ? I16[x/2+i] >> bs : I8[x/2+i];
-		pi = pLUT[U_index][intensity] >> 4; // pattern index (integer part)
-#if PATTERN_INTERPOLATION
-		pf = pLUT[U_index][intensity] & 15; // fractional part (interpolate with next) -- could restrict to less bits (e.g. 2)
-#endif
-
-		// Pattern
-		P  = pattern[1][pi  ][oy][ox + i] * s; // We could consider just XORing the sign bit; 1 for chroma
-#if PATTERN_INTERPOLATION
-		Pn = pattern[1][pi+1][oy][ox + i] * s; // But there are equivalent hw tricks, e.g. storing values as sign + amplitude instead of two's complement;  1 for chroma
-#endif
-
-		if (oc1) // overlap
-		{
-			P  = round(P  * oc1 + pattern[1][pi  ][oy_up][ox_up + i] * oc2 * s_up, 5);
-#if PATTERN_INTERPOLATION
-			Pn = round(Pn * oc1 + pattern[1][pi+1][oy_up][ox_up + i] * oc2 * s_up, 5);
-#endif
-		}
-
-#if PATTERN_INTERPOLATION
-		// Pattern interpolation: P is current, Pn is next, pf is interpolation coefficient
-		grain[U_index][16/subx+i] = round(P * (16-pf) + Pn * pf, 4);
-#else
-		grain[U_index][16/subx+i] = P;
-#endif
-
-		// Scale sign already integrated above because of overlap
-		scale[U_index][16/subx+i] = sLUT[U_index][intensity];
-	}
-	
-
-	// Scale & output
-	do
-	{
-		if (x > 0)
-		{
-			int32 g;
-			int16 l1, l0, r0, r1;
-
-			if (!flush)
-			{
-				// Horizontal deblock (across previous block)
-				l1 = grain[U_index][16/subx -2];
-				l0 = grain[U_index][16/subx -1];
-				r0 = grain[U_index][16/subx +0];
-				r1 = grain[U_index][16/subx +1];
-				grain[U_index][16/subx -1] = round(l1 + 3*l0 + r0, 2);
-				grain[U_index][16/subx +0] = round(l0 + 3*r0 + r1, 2);
-			}
-			for (i=0; i<16/subx; i++)
-			{
-				// Output previous block (or flush current)
-				g = round(scale[U_index][i] * (int16)grain[U_index][i], scale_shift);
-				if (bs)
-					I16[(x-16)/subx+i] = max(C_min<<bs, min(C_max<<bs, I16[(x-16)/subx+i] + g));
-				else
-					I8[(x-16)/subx+i] = max(C_min, min(C_max, I8[(x-16)/subx+i] + g));
-			}
-		}
-
-		// Shift pipeline
-		for (i=0; i<16/subx && !flush; i++)
-		{
-			grain[U_index][i] = grain[U_index][i+16/subx];
-			scale[U_index][i] = scale[U_index][i+16/subx];
-		}
-
-		if (x + 16 >= width)
-		{
-			flush ++;
-			x += 16;
-		}
-	} while (flush == 1);
-}
-
-
-static void add_grain_block_V422(void* I, int c, int x, int y, int width)
-{
-	uint8 *I8 = (uint8*)I;
-	uint16 *I16 = (uint16*)I;
-
-	int s, s_up;         // random sign flip (current + upper row)
-	uint8 ox, oy;        // random offset (current)
-	uint8 ox_up, oy_up;  // random offset (upper row)
-	uint8 oc1, oc2;      // overlapping coefficients
-	uint8 pi;            // pattern index integer part
-	int i, j;
-	int P;               // Pattern sample (from current pattern index)
-#if PATTERN_INTERPOLATION
-	int Pn;              // Next-pattern sample (from pattern index+1)
-	uint8 pf;            // pattern index fractional part
-#endif
-
-	uint8 intensity;
-	int flush = 0;
-	const int subx = 2;		//Format 422
-	const int suby = 1;		//Format422
-	
-	if (y & 1)
-		return;
-
-	j = y & 0xf;
-
-	if (y > 15 && j == 0) // first line of overlap
-	{
-		oc1 = 20; // current
-		oc2 = 20; // upper
-	}
-	else if (y > 15 && j == 1) // second line of overlap
-	{
-		oc1 = 24;
-		oc2 = 12;
-	}
-	else
-	{
-		oc1 = oc2 = 0;
-	}
-	
-	get_offset_v(rnd, &s, &ox, &oy);
-	
-	oy += j/suby;
-	
-	get_offset_v(rnd_up, &s_up, &ox_up, &oy_up);
-	
-	for (i=0; i<16/subx; i++)
-	{
-		intensity = bs ? I16[x/2+i] >> bs : I8[x/2+i];
-		pi = pLUT[V_index][intensity] >> 4; // pattern index (integer part)
-#if PATTERN_INTERPOLATION
-		pf = pLUT[V_index][intensity] & 15; // fractional part (interpolate with next) -- could restrict to less bits (e.g. 2)
-#endif
-
-		// Pattern
-		P  = pattern[1][pi  ][oy][ox + i] * s; // We could consider just XORing the sign bit; 1 for chroma
-#if PATTERN_INTERPOLATION
-		Pn = pattern[1][pi+1][oy][ox + i] * s; // But there are equivalent hw tricks, e.g. storing values as sign + amplitude instead of two's complement;  1 for chroma
-#endif
-
-		if (oc1) // overlap
-		{
-			P  = round(P  * oc1 + pattern[1][pi  ][oy_up][ox_up + i] * oc2 * s_up, 5);
-#if PATTERN_INTERPOLATION
-			Pn = round(Pn * oc1 + pattern[1][pi+1][oy_up][ox_up + i] * oc2 * s_up, 5);
-#endif
-		}
-
-#if PATTERN_INTERPOLATION
-		// Pattern interpolation: P is current, Pn is next, pf is interpolation coefficient
-		grain[V_index][16/subx+i] = round(P * (16-pf) + Pn * pf, 4);
-#else
-		grain[V_index][16/subx+i] = P;
-#endif
-
-		// Scale sign already integrated above because of overlap
-		scale[V_index][16/subx+i] = sLUT[V_index][intensity];
-	}
-	
-
-	// Scale & output
-	do
-	{
-		if (x > 0)
-		{
-			int32 g;
-			int16 l1, l0, r0, r1;
-
-			if (!flush)
-			{
-				// Horizontal deblock (across previous block)
-				l1 = grain[V_index][16/subx -2];
-				l0 = grain[V_index][16/subx -1];
-				r0 = grain[V_index][16/subx +0];
-				r1 = grain[V_index][16/subx +1];
-				grain[V_index][16/subx -1] = round(l1 + 3*l0 + r0, 2);
-				grain[V_index][16/subx +0] = round(l0 + 3*r0 + r1, 2);
-			}
-			for (i=0; i<16/subx; i++)
-			{
-				// Output previous block (or flush current)
-				g = round(scale[V_index][i] * (int16)grain[V_index][i], scale_shift);
-				if (bs)
-					I16[(x-16)/subx+i] = max(C_min<<bs, min(C_max<<bs, I16[(x-16)/subx+i] + g));
-				else
-					I8[(x-16)/subx+i] = max(C_min, min(C_max, I8[(x-16)/subx+i] + g));
-			}
-		}
-
-		// Shift pipeline
-		for (i=0; i<16/subx && !flush; i++)
-		{
-			grain[V_index][i] = grain[V_index][i+16/subx];
-			scale[V_index][i] = scale[V_index][i+16/subx];
-		}
-
-		if (x + 16 >= width)
-		{
-			flush ++;
-			x += 16;
-		}
-	} while (flush == 1);
-}
-
-static void add_grain_block_U444(void* I, int c, int x, int y, int width)
-{
-	uint8 *I8 = (uint8*)I;
-	uint16 *I16 = (uint16*)I;
-
-	int s, s_up;         // random sign flip (current + upper row)
-	uint8 ox, oy;        // random offset (current)
-	uint8 ox_up, oy_up;  // random offset (upper row)
-	uint8 oc1, oc2;      // overlapping coefficients
-	uint8 pi;            // pattern index integer part
-	int i, j;
-	int P;               // Pattern sample (from current pattern index)
-#if PATTERN_INTERPOLATION
-	int Pn;              // Next-pattern sample (from pattern index+1)
-	uint8 pf;            // pattern index fractional part
-#endif
-
-	uint8 intensity;
-	int flush = 0;
-	const int subx = 1;		//Format 444
-	const int suby = 1;		//Format444
-	
-	if (y & 1)
-		return;
-
-	j = y & 0xf;
-
-	if (y > 15 && j == 0) // first line of overlap
-	{
-		oc1 = 20; // current
-		oc2 = 20; // upper
-	}
-	else if (y > 15 && j == 1) // second line of overlap
-	{
-		oc1 = 24;
-		oc2 = 12;
-	}
-	else
-	{
-		oc1 = oc2 = 0;
-	}
-	
-	get_offset_u(rnd, &s, &ox, &oy);
-	
-	oy += j/suby;
-	
-	get_offset_u(rnd_up, &s_up, &ox_up, &oy_up);
-	
-	for (i=0; i<16/subx; i++)
-	{
-		intensity = bs ? I16[x/2+i] >> bs : I8[x/2+i];
-		pi = pLUT[U_index][intensity] >> 4; // pattern index (integer part)
-#if PATTERN_INTERPOLATION
-		pf = pLUT[U_index][intensity] & 15; // fractional part (interpolate with next) -- could restrict to less bits (e.g. 2)
-#endif
-
-		// Pattern
-		P  = pattern[1][pi  ][oy][ox + i] * s; // We could consider just XORing the sign bit; 1 for chroma
-#if PATTERN_INTERPOLATION
-		Pn = pattern[1][pi+1][oy][ox + i] * s; // But there are equivalent hw tricks, e.g. storing values as sign + amplitude instead of two's complement;  1 for chroma
-#endif
-
-		if (oc1) // overlap
-		{
-			P  = round(P  * oc1 + pattern[1][pi  ][oy_up][ox_up + i] * oc2 * s_up, 5);
-#if PATTERN_INTERPOLATION
-			Pn = round(Pn * oc1 + pattern[1][pi+1][oy_up][ox_up + i] * oc2 * s_up, 5);
-#endif
-		}
-
-#if PATTERN_INTERPOLATION
-		// Pattern interpolation: P is current, Pn is next, pf is interpolation coefficient
-		grain[U_index][16/subx+i] = round(P * (16-pf) + Pn * pf, 4);
-#else
-		grain[U_index][16/subx+i] = P;
-#endif
-
-		// Scale sign already integrated above because of overlap
-		scale[U_index][16/subx+i] = sLUT[U_index][intensity];
-	}
-	
-
-	// Scale & output
-	do
-	{
-		if (x > 0)
-		{
-			int32 g;
-			int16 l1, l0, r0, r1;
-
-			if (!flush)
-			{
-				// Horizontal deblock (across previous block)
-				l1 = grain[U_index][16/subx -2];
-				l0 = grain[U_index][16/subx -1];
-				r0 = grain[U_index][16/subx +0];
-				r1 = grain[U_index][16/subx +1];
-				grain[U_index][16/subx -1] = round(l1 + 3*l0 + r0, 2);
-				grain[U_index][16/subx +0] = round(l0 + 3*r0 + r1, 2);
-			}
-			for (i=0; i<16/subx; i++)
-			{
-				// Output previous block (or flush current)
-				g = round(scale[U_index][i] * (int16)grain[U_index][i], scale_shift);
-				if (bs)
-					I16[(x-16)/subx+i] = max(C_min<<bs, min(C_max<<bs, I16[(x-16)/subx+i] + g));
-				else
-					I8[(x-16)/subx+i] = max(C_min, min(C_max, I8[(x-16)/subx+i] + g));
-			}
-		}
-
-		// Shift pipeline
-		for (i=0; i<16/subx && !flush; i++)
-		{
-			grain[U_index][i] = grain[U_index][i+16/subx];
-			scale[U_index][i] = scale[U_index][i+16/subx];
-		}
-
-		if (x + 16 >= width)
-		{
-			flush ++;
-			x += 16;
-		}
-	} while (flush == 1);
-}
-
-
-static void add_grain_block_V444(void* I, int c, int x, int y, int width)
-{
-	uint8 *I8 = (uint8*)I;
-	uint16 *I16 = (uint16*)I;
-
-	int s, s_up;         // random sign flip (current + upper row)
-	uint8 ox, oy;        // random offset (current)
-	uint8 ox_up, oy_up;  // random offset (upper row)
-	uint8 oc1, oc2;      // overlapping coefficients
-	uint8 pi;            // pattern index integer part
-	int i, j;
-	int P;               // Pattern sample (from current pattern index)
-#if PATTERN_INTERPOLATION
-	int Pn;              // Next-pattern sample (from pattern index+1)
-	uint8 pf;            // pattern index fractional part
-#endif
-
-	uint8 intensity;
-	int flush = 0;
-	const int subx = 1;		//Format 444
-	const int suby = 1;		//Format444
-	
-	if (y & 1)
-		return;
-
-	j = y & 0xf;
-
-	if (y > 15 && j == 0) // first line of overlap
-	{
-		oc1 = 20; // current
-		oc2 = 20; // upper
-	}
-	else if (y > 15 && j == 1) // second line of overlap
-	{
-		oc1 = 24;
-		oc2 = 12;
-	}
-	else
-	{
-		oc1 = oc2 = 0;
-	}
-	
-	get_offset_v(rnd, &s, &ox, &oy);
-	
-	oy += j/suby;
-	
-	get_offset_v(rnd_up, &s_up, &ox_up, &oy_up);
-	
-	for (i=0; i<16/subx; i++)
-	{
-		intensity = bs ? I16[x/2+i] >> bs : I8[x/2+i];
-		pi = pLUT[V_index][intensity] >> 4; // pattern index (integer part)
-#if PATTERN_INTERPOLATION
-		pf = pLUT[V_index][intensity] & 15; // fractional part (interpolate with next) -- could restrict to less bits (e.g. 2)
-#endif
-
-		// Pattern
-		P  = pattern[1][pi  ][oy][ox + i] * s; // We could consider just XORing the sign bit; 1 for chroma
-#if PATTERN_INTERPOLATION
-		Pn = pattern[1][pi+1][oy][ox + i] * s; // But there are equivalent hw tricks, e.g. storing values as sign + amplitude instead of two's complement;  1 for chroma
-#endif
-
-		if (oc1) // overlap
-		{
-			P  = round(P  * oc1 + pattern[1][pi  ][oy_up][ox_up + i] * oc2 * s_up, 5);
-#if PATTERN_INTERPOLATION
-			Pn = round(Pn * oc1 + pattern[1][pi+1][oy_up][ox_up + i] * oc2 * s_up, 5);
-#endif
-		}
-
-#if PATTERN_INTERPOLATION
-		// Pattern interpolation: P is current, Pn is next, pf is interpolation coefficient
-		grain[V_index][16/subx+i] = round(P * (16-pf) + Pn * pf, 4);
-#else
-		grain[V_index][16/subx+i] = P;
-#endif
-
-		// Scale sign already integrated above because of overlap
-		scale[V_index][16/subx+i] = sLUT[V_index][intensity];
-	}
-	
-
-	// Scale & output
-	do
-	{
-		if (x > 0)
-		{
-			int32 g;
-			int16 l1, l0, r0, r1;
-
-			if (!flush)
-			{
-				// Horizontal deblock (across previous block)
-				l1 = grain[V_index][16/subx -2];
-				l0 = grain[V_index][16/subx -1];
-				r0 = grain[V_index][16/subx +0];
-				r1 = grain[V_index][16/subx +1];
-				grain[V_index][16/subx -1] = round(l1 + 3*l0 + r0, 2);
-				grain[V_index][16/subx +0] = round(l0 + 3*r0 + r1, 2);
-			}
-			for (i=0; i<16/subx; i++)
-			{
-				// Output previous block (or flush current)
-				g = round(scale[V_index][i] * (int16)grain[V_index][i], scale_shift);
-				if (bs)
-					I16[(x-16)/subx+i] = max(C_min<<bs, min(C_max<<bs, I16[(x-16)/subx+i] + g));
-				else
-					I8[(x-16)/subx+i] = max(C_min, min(C_max, I8[(x-16)/subx+i] + g));
-			}
-		}
-
-		// Shift pipeline
-		for (i=0; i<16/subx && !flush; i++)
-		{
-			grain[V_index][i] = grain[V_index][i+16/subx];
-			scale[V_index][i] = scale[V_index][i+16/subx];
-		}
-
-		if (x + 16 >= width)
-		{
-			flush ++;
-			x += 16;
-		}
-	} while (flush == 1);
-}*/
-
 
 /* Public interface ***********************************************************/
 /*
@@ -1217,7 +184,7 @@ void vfgs_add_grain_line(void* Y, void* U, void* V, int y, int width)
 
 }*/
 
-void vfgs_add_grain_stripe_420(void* Y, void* U, void* V, unsigned y, unsigned width, unsigned height, unsigned stride, unsigned cstride)
+void vfgs_add_grain_stripe_420_8bits(void* Y, void* U, void* V, unsigned y, unsigned width, unsigned height, unsigned stride, unsigned cstride)
 {
 	unsigned x, i;
 	uint8 *I8;
@@ -1255,7 +222,6 @@ void vfgs_add_grain_stripe_420(void* Y, void* U, void* V, unsigned y, unsigned w
 
 	// Y: get grain & scale
 	I8 = (uint8*)Y;
-	I16 = (uint16*)Y;
 	for (y=0; y<height; y++)
 	{
 		for (x=0; x<width; x+=16)
@@ -1265,7 +231,7 @@ void vfgs_add_grain_stripe_420(void* Y, void* U, void* V, unsigned y, unsigned w
 			uint8 oy = offset_y[Y_index][x/16];
 			for (i=0; i<16; i++) // may overflow past right image border but no problem: allocated space is multiple of 16
 			{
-				uint8 intensity = bs ? I16[x+i] >> bs : I8[x+i];
+				uint8 intensity = I8[x+i];
 				uint8 pi = pLUT[Y_index][intensity] >> 4; // pattern index (integer part) / TODO: try also with zero-shift
 				// TODO: assert(pi < VFGS_MAX_PATTERNS); // out of loop ?
 				uint8 P  = pattern[0][pi][oy + y][ox + i] * s; // We could consider just XORing the sign bit
@@ -1274,7 +240,6 @@ void vfgs_add_grain_stripe_420(void* Y, void* U, void* V, unsigned y, unsigned w
 			}
 		}
 		I8  += stride;
-		I16 += stride;
 	}
 
 	// Y: vertical overlap (merge lines over_buf with 0 & 1, then copy 16 & 17 to over_buf)
@@ -1311,19 +276,14 @@ void vfgs_add_grain_stripe_420(void* Y, void* U, void* V, unsigned y, unsigned w
 	// Y: scale & merge
 	height = min(16, height);
 	I8 = (uint8*)Y;
-	I16 = (uint16*)Y;
 	for (y=0; y<height; y++)
 	{
 		for (x=0; x<width; x++)
 		{
 			int32 g = round(scale_buf[y][x] * (int16)grain_buf[y][x], scale_shift);
-			if (bs)
-				I16[x] = max(Y_min<<bs, min(Y_max<<bs, I16[x] + g));
-			else
-				I8[x] = max(Y_min, min(Y_max, I8[x] + g));
+			I8[x] = max(Y_min, min(Y_max, I8[x] + g));
 		}
 		I8  += stride;
-		I16 += stride;
 	}
 
 	
@@ -1333,7 +293,6 @@ void vfgs_add_grain_stripe_420(void* Y, void* U, void* V, unsigned y, unsigned w
 	const int stepx = 2;
 	// U: get grain & scale
 	I8 = (uint8*)U;
-	I16 = (uint16*)U;
 	for (y=0; y<height_u; y+=stepy)
 	{
 		for (x=0; x<width; x+=16)
@@ -1343,7 +302,7 @@ void vfgs_add_grain_stripe_420(void* Y, void* U, void* V, unsigned y, unsigned w
 			uint8 oy = offset_y[U_index][x/16];
 			for (i=0; i<16; i+=stepx) // may overflow past right image border but no problem: allocated space is multiple of 16
 			{
-				uint8 intensity = bs ? I16[x+i] >> bs : I8[x+i];
+				uint8 intensity = I8[x+i];
 				uint8 pi = pLUT[U_index][intensity] >> 4; // pattern index (integer part) / TODO: try also with zero-shift
 				// TODO: assert(pi < VFGS_MAX_PATTERNS); // out of loop ?
 				uint8 P  = pattern[0][pi][oy + y][ox + i] * s; // We could consider just XORing the sign bit
@@ -1352,7 +311,6 @@ void vfgs_add_grain_stripe_420(void* Y, void* U, void* V, unsigned y, unsigned w
 			}
 		}
 		I8  += cstride;
-		I16 += cstride;
 	}
 	
 	//Vertical overlap
@@ -1384,19 +342,14 @@ void vfgs_add_grain_stripe_420(void* Y, void* U, void* V, unsigned y, unsigned w
 
 	height_u = min(16, height_u);
 	I8 = (uint8*)U;
-	I16 = (uint16*)U;
 	for (y=0; y<height_u; y+=stepy)
 	{
 		for (x=0; x<width; x+=stepx)
 		{
 			int32 g = round(scale_buf[y][x] * (int16)grain_buf[y][x], scale_shift);
-			if (bs)
-				I16[x] = max(C_min<<bs, min(C_max<<bs, I16[x] + g));
-			else
-				I8[x] = max(C_min, min(C_max, I8[x] + g));
+			I8[x] = max(C_min, min(C_max, I8[x] + g));
 		}
 		I8  += cstride;
-		I16 += cstride;
 	}
 
 
@@ -1404,7 +357,6 @@ void vfgs_add_grain_stripe_420(void* Y, void* U, void* V, unsigned y, unsigned w
 	height_v = min(18, (height_v-y_base));
 	// V: get grain & scale
 	I8 = (uint8*)V;
-	I16 = (uint16*)V;
 	for (y=0; y<height_v; y+=stepy)
 	{
 		for (x=0; x<width; x+=16)
@@ -1414,7 +366,7 @@ void vfgs_add_grain_stripe_420(void* Y, void* U, void* V, unsigned y, unsigned w
 			uint8 oy = offset_y[V_index][x/16];
 			for (i=0; i<16; i+=stepx) // may overflow past right image border but no problem: allocated space is multiple of 16
 			{
-				uint8 intensity = bs ? I16[x+i] >> bs : I8[x+i];
+				uint8 intensity = I8[x+i];
 				uint8 pi = pLUT[V_index][intensity] >> 4; // pattern index (integer part) / TODO: try also with zero-shift
 				// TODO: assert(pi < VFGS_MAX_PATTERNS); // out of loop ?
 				uint8 P  = pattern[0][pi][oy + y][ox + i] * s; // We could consider just XORing the sign bit
@@ -1423,7 +375,6 @@ void vfgs_add_grain_stripe_420(void* Y, void* U, void* V, unsigned y, unsigned w
 			}
 		}
 		I8  += cstride;
-		I16 += cstride;
 	}
 	
 	//Vertical overlap
@@ -1455,24 +406,252 @@ void vfgs_add_grain_stripe_420(void* Y, void* U, void* V, unsigned y, unsigned w
 
 	height_v = min(16, height_v/csuby);
 	I8 = (uint8*)V;
+	for (y=0; y<height_v; y+=stepy)
+	{
+		for (x=0; x<width; x+=stepx)
+		{
+			int32 g = round(scale_buf[y][x] * (int16)grain_buf[y][x], scale_shift);
+			I8[x] = max(C_min, min(C_max, I8[x] + g));
+		}
+		I8  += cstride;
+	}
+}
+
+void vfgs_add_grain_stripe_420_10bits(void* Y, void* U, void* V, unsigned y, unsigned width, unsigned height, unsigned stride, unsigned cstride)
+{
+	unsigned x, i;
+	uint8 *I8;
+	uint16 *I16;
+	int overlap=0;
+	int y_base = 0;
+	unsigned height_u = height;
+	unsigned height_v = height;
+
+	// TODO could assert(height%16) if YUV memory is padded properly
+	assert(width>128 && width<=4096 && width<=stride);
+	assert((stride & 0x0f) == 0 && stride<=4096);
+	assert((y & 0x0f) == 0);
+	assert(bs == 0 || bs == 2);
+	assert(scale_shift + bs >= 8 && scale_shift + bs <= 13);
+	// TODO: assert subx, suby, Y/C min/max, max pLUT values, etc
+
+	// Generate random offsets
+	for (x=0; x<width; x+=16)
+	{
+		int s[3];
+		get_offset_y(rnd, &s[Y_index], &offset_x[Y_index][x/16], &offset_y[Y_index][x/16]);
+		get_offset_u(rnd, &s[U_index], &offset_x[U_index][x/16], &offset_y[U_index][x/16]);
+		get_offset_v(rnd, &s[V_index], &offset_x[V_index][x/16], &offset_y[V_index][x/16]);
+		rnd = prng(rnd);
+		sign[Y_index][x/16] = s[Y_index];
+		sign[U_index][x/16] = s[U_index];
+		sign[V_index][x/16] = s[V_index];
+	}
+
+	// Compute stripe height (including overlap for next stripe)
+	overlap = (y > 0);
+	height = min(18, height-y);
+	y_base = y;
+
+	// Y: get grain & scale
+	I16 = (uint16*)Y;
+	for (y=0; y<height; y++)
+	{
+		for (x=0; x<width; x+=16)
+		{
+			int    s = sign[Y_index][x/16];
+			uint8 ox = offset_x[Y_index][x/16];
+			uint8 oy = offset_y[Y_index][x/16];
+			for (i=0; i<16; i++) // may overflow past right image border but no problem: allocated space is multiple of 16
+			{
+				uint8 intensity = I16[x+i] >> 2;
+				uint8 pi = pLUT[Y_index][intensity] >> 4; // pattern index (integer part) / TODO: try also with zero-shift
+				// TODO: assert(pi < VFGS_MAX_PATTERNS); // out of loop ?
+				uint8 P  = pattern[0][pi][oy + y][ox + i] * s; // We could consider just XORing the sign bit
+				grain_buf[y][x+i] = P;
+				scale_buf[y][x+i] = sLUT[Y_index][intensity];
+			}
+		}
+		I16 += stride;
+	}
+
+	// Y: vertical overlap (merge lines over_buf with 0 & 1, then copy 16 & 17 to over_buf)
+	// problem: need to store 9-bits now ? or just clip ?
+	for (y=0; y<2 && overlap; y++)
+	{
+		uint8 oc1 = y ? 24 : 12; // current
+		uint8 oc2 = y ? 12 : 24; // previous
+		for (x=0; x<width; x++)
+		{
+			int16 g = round(oc1*grain_buf[y][x+i] + oc2*over_buf[y][x+i], 5);
+			grain_buf[y][x+i] = max(-127, min(+127, g));
+			over_buf[y][x+i] = grain_buf[y+16][x+i];
+		}
+	}
+
+	// Y: horizontal deblock
+	// problem: need to store 9-bits now ? or just clip ?
+	// TODO: set grain_buf[y][width] to zero if width == K*16 +1 (to avoid filtering garbage)
+	for (y=0; y<16; y++)
+		for (x=16; x<width; x+=16)
+		{
+			int16 l1, l0, r0, r1;
+			l1 = grain_buf[y][x -2];
+			l0 = grain_buf[y][x -1];
+			r0 = grain_buf[y][x +0];
+			r1 = grain_buf[y][x +1];
+			l1 = round(l1 + 3*l0 + r0, 2); // left
+			r1 = round(l0 + 3*r0 + r1, 2); // right
+			grain_buf[y][x -1] = max(-127, min(+127, l1));
+			grain_buf[y][x +0] = max(-127, min(+127, r1));
+		}
+
+	// Y: scale & merge
+	height = min(16, height);
+	I16 = (uint16*)Y;
+	for (y=0; y<height; y++)
+	{
+		for (x=0; x<width; x++)
+		{
+			int32 g = round(scale_buf[y][x] * (int16)grain_buf[y][x], scale_shift);
+			I16[x] = max(Y_min<<2, min(Y_max<<2, I16[x] + g));
+			
+		}
+		I16 += stride;
+	}
+
+	// U
+	height_u = min(18, (height_u-y_base));
+	const int stepy = 2;
+	const int stepx = 2;
+	// U: get grain & scale
+	I16 = (uint16*)U;
+	for (y=0; y<height_u; y+=stepy)
+	{
+		for (x=0; x<width; x+=16)
+		{
+			int    s = sign[U_index][x/16];
+			uint8 ox = offset_x[U_index][x/16];
+			uint8 oy = offset_y[U_index][x/16];
+			for (i=0; i<16; i+=stepx) // may overflow past right image border but no problem: allocated space is multiple of 16
+			{
+				uint8 intensity = I16[x+i] >> 2;
+				uint8 pi = pLUT[U_index][intensity] >> 4; // pattern index (integer part) / TODO: try also with zero-shift
+				// TODO: assert(pi < VFGS_MAX_PATTERNS); // out of loop ?
+				uint8 P  = pattern[0][pi][oy + y][ox + i] * s; // We could consider just XORing the sign bit
+				grain_buf[y][x+i] = P;
+				scale_buf[y][x+i] = sLUT[U_index][intensity];
+			}
+		}
+		I16 += cstride;
+	}
+	
+	//Vertical overlap
+	for (y=0; y<2 && overlap; y+=stepy)
+	{
+		uint8 oc1 = y ? 24 : 12; // current
+		uint8 oc2 = y ? 12 : 24; // previous
+		for (x=0; x<width; x+=stepx)
+		{
+			int16 g = round(oc1*grain_buf[y][x+i] + oc2*over_buf[y][x+i], 5);
+			grain_buf[y][x+i] = max(-127, min(+127, g));
+			over_buf[y][x+i] = grain_buf[y+16][x+i];
+		}
+	}
+	//Horizontal deblocking
+	for (y=0; y<16; y+=stepy)
+		for (x=16; x<width; x+=16)
+		{
+			int16 l1, l0, r0, r1;
+			l1 = grain_buf[y][x -2];
+			l0 = grain_buf[y][x -1];
+			r0 = grain_buf[y][x +0];
+			r1 = grain_buf[y][x +1];
+			l1 = round(l1 + 3*l0 + r0, 2); // left
+			r1 = round(l0 + 3*r0 + r1, 2); // right
+			grain_buf[y][x -1] = max(-127, min(+127, l1));
+			grain_buf[y][x +0] = max(-127, min(+127, r1));
+		}
+
+	height_u = min(16, height_u);
+	I16 = (uint16*)U;
+	for (y=0; y<height_u; y+=stepy)
+	{
+		for (x=0; x<width; x+=stepx)
+		{
+			int32 g = round(scale_buf[y][x] * (int16)grain_buf[y][x], scale_shift);
+			I16[x] = max(C_min<<2, min(C_max<<2, I16[x] + g));
+		}
+		I16 += cstride;
+	}
+
+
+	// V
+	height_v = min(18, (height_v-y_base));
+	// V: get grain & scale
+	I16 = (uint16*)V;
+	for (y=0; y<height_v; y+=stepy)
+	{
+		for (x=0; x<width; x+=16)
+		{
+			int    s = sign[V_index][x/16];
+			uint8 ox = offset_x[V_index][x/16];
+			uint8 oy = offset_y[V_index][x/16];
+			for (i=0; i<16; i+=stepx) // may overflow past right image border but no problem: allocated space is multiple of 16
+			{
+				uint8 intensity = I16[x+i] >> 2;
+				uint8 pi = pLUT[V_index][intensity] >> 4; // pattern index (integer part) / TODO: try also with zero-shift
+				// TODO: assert(pi < VFGS_MAX_PATTERNS); // out of loop ?
+				uint8 P  = pattern[0][pi][oy + y][ox + i] * s; // We could consider just XORing the sign bit
+				grain_buf[y][x+i] = P;
+				scale_buf[y][x+i] = sLUT[V_index][intensity];
+			}
+		}
+		I16 += cstride;
+	}
+	
+	//Vertical overlap
+	for (y=0; y<2 && overlap; y+=stepy)
+	{
+		uint8 oc1 = y ? 24 : 12; // current
+		uint8 oc2 = y ? 12 : 24; // previous
+		for (x=0; x<width; x++)
+		{
+			int16 g = round(oc1*grain_buf[y][x+i] + oc2*over_buf[y][x+i], 5);
+			grain_buf[y][x+i] = max(-127, min(+127, g));
+			over_buf[y][x+i] = grain_buf[y+16][x+i];
+		}
+	}
+	//Horizontal deblocking
+	for (y=0; y<16; y+=stepy)
+		for (x=16; x<width; x+=16)
+		{
+			int16 l1, l0, r0, r1;
+			l1 = grain_buf[y][x -2];
+			l0 = grain_buf[y][x -1];
+			r0 = grain_buf[y][x +0];
+			r1 = grain_buf[y][x +1];
+			l1 = round(l1 + 3*l0 + r0, 2); // left
+			r1 = round(l0 + 3*r0 + r1, 2); // right
+			grain_buf[y][x -1] = max(-127, min(+127, l1));
+			grain_buf[y][x +0] = max(-127, min(+127, r1));
+		}
+
+	height_v = min(16, height_v/csuby);
 	I16 = (uint16*)V;
 	for (y=0; y<height_v; y+=stepy)
 	{
 		for (x=0; x<width; x+=stepx)
 		{
 			int32 g = round(scale_buf[y][x] * (int16)grain_buf[y][x], scale_shift);
-			if (bs){
-				//printf("X: %d \n", x);
-				I16[x] = max(C_min<<bs, min(C_max<<bs, I16[x] + g)); }
-			else
-				I8[x] = max(C_min, min(C_max, I8[x] + g));
+
+			I16[x] = max(C_min<<2, min(C_max<<2, I16[x] + g));
 		}
-		I8  += cstride;
 		I16 += cstride;
 	}
 }
 
-void vfgs_add_grain_stripe_422(void* Y, void* U, void* V, unsigned y, unsigned width, unsigned height, unsigned stride, unsigned cstride)
+void vfgs_add_grain_stripe_422_8bits(void* Y, void* U, void* V, unsigned y, unsigned width, unsigned height, unsigned stride, unsigned cstride)
 {
 	unsigned x, i;
 	uint8 *I8;
@@ -1510,7 +689,6 @@ void vfgs_add_grain_stripe_422(void* Y, void* U, void* V, unsigned y, unsigned w
 
 	// Y: get grain & scale
 	I8 = (uint8*)Y;
-	I16 = (uint16*)Y;
 	for (y=0; y<height; y++)
 	{
 		for (x=0; x<width; x+=16)
@@ -1520,7 +698,7 @@ void vfgs_add_grain_stripe_422(void* Y, void* U, void* V, unsigned y, unsigned w
 			uint8 oy = offset_y[Y_index][x/16];
 			for (i=0; i<16; i++) // may overflow past right image border but no problem: allocated space is multiple of 16
 			{
-				uint8 intensity = bs ? I16[x+i] >> bs : I8[x+i];
+				uint8 intensity = I8[x+i];
 				uint8 pi = pLUT[Y_index][intensity] >> 4; // pattern index (integer part) / TODO: try also with zero-shift
 				// TODO: assert(pi < VFGS_MAX_PATTERNS); // out of loop ?
 				uint8 P  = pattern[0][pi][oy + y][ox + i] * s; // We could consider just XORing the sign bit
@@ -1529,7 +707,6 @@ void vfgs_add_grain_stripe_422(void* Y, void* U, void* V, unsigned y, unsigned w
 			}
 		}
 		I8  += stride;
-		I16 += stride;
 	}
 
 	// Y: vertical overlap (merge lines over_buf with 0 & 1, then copy 16 & 17 to over_buf)
@@ -1566,19 +743,14 @@ void vfgs_add_grain_stripe_422(void* Y, void* U, void* V, unsigned y, unsigned w
 	// Y: scale & merge
 	height = min(16, height);
 	I8 = (uint8*)Y;
-	I16 = (uint16*)Y;
 	for (y=0; y<height; y++)
 	{
 		for (x=0; x<width; x++)
 		{
 			int32 g = round(scale_buf[y][x] * (int16)grain_buf[y][x], scale_shift);
-			if (bs)
-				I16[x] = max(Y_min<<bs, min(Y_max<<bs, I16[x] + g));
-			else
-				I8[x] = max(Y_min, min(Y_max, I8[x] + g));
+			I8[x] = max(Y_min, min(Y_max, I8[x] + g));
 		}
 		I8  += stride;
-		I16 += stride;
 	}
 
 	
@@ -1588,7 +760,6 @@ void vfgs_add_grain_stripe_422(void* Y, void* U, void* V, unsigned y, unsigned w
 	const int stepx = 2;
 	// U: get grain & scale
 	I8 = (uint8*)U;
-	I16 = (uint16*)U;
 	for (y=0; y<height_u; y+=stepy)
 	{
 		for (x=0; x<width; x+=16)
@@ -1598,7 +769,7 @@ void vfgs_add_grain_stripe_422(void* Y, void* U, void* V, unsigned y, unsigned w
 			uint8 oy = offset_y[U_index][x/16];
 			for (i=0; i<16; i+=stepx) // may overflow past right image border but no problem: allocated space is multiple of 16
 			{
-				uint8 intensity = bs ? I16[x+i] >> bs : I8[x+i];
+				uint8 intensity = I8[x+i];
 				uint8 pi = pLUT[U_index][intensity] >> 4; // pattern index (integer part) / TODO: try also with zero-shift
 				// TODO: assert(pi < VFGS_MAX_PATTERNS); // out of loop ?
 				uint8 P  = pattern[0][pi][oy + y][ox + i] * s; // We could consider just XORing the sign bit
@@ -1607,7 +778,6 @@ void vfgs_add_grain_stripe_422(void* Y, void* U, void* V, unsigned y, unsigned w
 			}
 		}
 		I8  += cstride;
-		I16 += cstride;
 	}
 	
 	//Vertical overlap
@@ -1639,19 +809,14 @@ void vfgs_add_grain_stripe_422(void* Y, void* U, void* V, unsigned y, unsigned w
 
 	height_u = min(16, height_u);
 	I8 = (uint8*)U;
-	I16 = (uint16*)U;
 	for (y=0; y<height_u; y+=stepy)
 	{
 		for (x=0; x<width; x+=stepx)
 		{
 			int32 g = round(scale_buf[y][x] * (int16)grain_buf[y][x], scale_shift);
-			if (bs)
-				I16[x] = max(C_min<<bs, min(C_max<<bs, I16[x] + g));
-			else
-				I8[x] = max(C_min, min(C_max, I8[x] + g));
+			I8[x] = max(C_min, min(C_max, I8[x] + g));
 		}
 		I8  += cstride;
-		I16 += cstride;
 	}
 
 
@@ -1659,7 +824,6 @@ void vfgs_add_grain_stripe_422(void* Y, void* U, void* V, unsigned y, unsigned w
 	height_v = min(18, (height_v-y_base));
 	// V: get grain & scale
 	I8 = (uint8*)V;
-	I16 = (uint16*)V;
 	for (y=0; y<height_v; y+=stepy)
 	{
 		for (x=0; x<width; x+=16)
@@ -1669,7 +833,7 @@ void vfgs_add_grain_stripe_422(void* Y, void* U, void* V, unsigned y, unsigned w
 			uint8 oy = offset_y[V_index][x/16];
 			for (i=0; i<16; i+=stepx) // may overflow past right image border but no problem: allocated space is multiple of 16
 			{
-				uint8 intensity = bs ? I16[x+i] >> bs : I8[x+i];
+				uint8 intensity = I8[x+i];
 				uint8 pi = pLUT[V_index][intensity] >> 4; // pattern index (integer part) / TODO: try also with zero-shift
 				// TODO: assert(pi < VFGS_MAX_PATTERNS); // out of loop ?
 				uint8 P  = pattern[0][pi][oy + y][ox + i] * s; // We could consider just XORing the sign bit
@@ -1678,7 +842,6 @@ void vfgs_add_grain_stripe_422(void* Y, void* U, void* V, unsigned y, unsigned w
 			}
 		}
 		I8  += cstride;
-		I16 += cstride;
 	}
 	
 	//Vertical overlap
@@ -1710,24 +873,252 @@ void vfgs_add_grain_stripe_422(void* Y, void* U, void* V, unsigned y, unsigned w
 
 	height_v = min(16, height_v/csuby);
 	I8 = (uint8*)V;
+	for (y=0; y<height_v; y+=stepy)
+	{
+		for (x=0; x<width; x+=stepx)
+		{
+			int32 g = round(scale_buf[y][x] * (int16)grain_buf[y][x], scale_shift);
+			I8[x] = max(C_min, min(C_max, I8[x] + g));
+		}
+		I8  += cstride;
+	}
+}
+
+void vfgs_add_grain_stripe_422_10bits(void* Y, void* U, void* V, unsigned y, unsigned width, unsigned height, unsigned stride, unsigned cstride)
+{
+	unsigned x, i;
+	uint8 *I8;
+	uint16 *I16;
+	int overlap=0;
+	int y_base = 0;
+	unsigned height_u = height;
+	unsigned height_v = height;
+
+	// TODO could assert(height%16) if YUV memory is padded properly
+	assert(width>128 && width<=4096 && width<=stride);
+	assert((stride & 0x0f) == 0 && stride<=4096);
+	assert((y & 0x0f) == 0);
+	assert(bs == 0 || bs == 2);
+	assert(scale_shift + bs >= 8 && scale_shift + bs <= 13);
+	// TODO: assert subx, suby, Y/C min/max, max pLUT values, etc
+
+	// Generate random offsets
+	for (x=0; x<width; x+=16)
+	{
+		int s[3];
+		get_offset_y(rnd, &s[Y_index], &offset_x[Y_index][x/16], &offset_y[Y_index][x/16]);
+		get_offset_u(rnd, &s[U_index], &offset_x[U_index][x/16], &offset_y[U_index][x/16]);
+		get_offset_v(rnd, &s[V_index], &offset_x[V_index][x/16], &offset_y[V_index][x/16]);
+		rnd = prng(rnd);
+		sign[Y_index][x/16] = s[Y_index];
+		sign[U_index][x/16] = s[U_index];
+		sign[V_index][x/16] = s[V_index];
+	}
+
+	// Compute stripe height (including overlap for next stripe)
+	overlap = (y > 0);
+	height = min(18, height-y);
+	y_base = y;
+
+	// Y: get grain & scale
+	I16 = (uint16*)Y;
+	for (y=0; y<height; y++)
+	{
+		for (x=0; x<width; x+=16)
+		{
+			int    s = sign[Y_index][x/16];
+			uint8 ox = offset_x[Y_index][x/16];
+			uint8 oy = offset_y[Y_index][x/16];
+			for (i=0; i<16; i++) // may overflow past right image border but no problem: allocated space is multiple of 16
+			{
+				uint8 intensity = I16[x+i] >> 2;
+				uint8 pi = pLUT[Y_index][intensity] >> 4; // pattern index (integer part) / TODO: try also with zero-shift
+				// TODO: assert(pi < VFGS_MAX_PATTERNS); // out of loop ?
+				uint8 P  = pattern[0][pi][oy + y][ox + i] * s; // We could consider just XORing the sign bit
+				grain_buf[y][x+i] = P;
+				scale_buf[y][x+i] = sLUT[Y_index][intensity];
+			}
+		}
+		I16 += stride;
+	}
+
+	// Y: vertical overlap (merge lines over_buf with 0 & 1, then copy 16 & 17 to over_buf)
+	// problem: need to store 9-bits now ? or just clip ?
+	for (y=0; y<2 && overlap; y++)
+	{
+		uint8 oc1 = y ? 24 : 12; // current
+		uint8 oc2 = y ? 12 : 24; // previous
+		for (x=0; x<width; x++)
+		{
+			int16 g = round(oc1*grain_buf[y][x+i] + oc2*over_buf[y][x+i], 5);
+			grain_buf[y][x+i] = max(-127, min(+127, g));
+			over_buf[y][x+i] = grain_buf[y+16][x+i];
+		}
+	}
+
+	// Y: horizontal deblock
+	// problem: need to store 9-bits now ? or just clip ?
+	// TODO: set grain_buf[y][width] to zero if width == K*16 +1 (to avoid filtering garbage)
+	for (y=0; y<16; y++)
+		for (x=16; x<width; x+=16)
+		{
+			int16 l1, l0, r0, r1;
+			l1 = grain_buf[y][x -2];
+			l0 = grain_buf[y][x -1];
+			r0 = grain_buf[y][x +0];
+			r1 = grain_buf[y][x +1];
+			l1 = round(l1 + 3*l0 + r0, 2); // left
+			r1 = round(l0 + 3*r0 + r1, 2); // right
+			grain_buf[y][x -1] = max(-127, min(+127, l1));
+			grain_buf[y][x +0] = max(-127, min(+127, r1));
+		}
+
+	// Y: scale & merge
+	height = min(16, height);
+	I16 = (uint16*)Y;
+	for (y=0; y<height; y++)
+	{
+		for (x=0; x<width; x++)
+		{
+			int32 g = round(scale_buf[y][x] * (int16)grain_buf[y][x], scale_shift);
+			I16[x] = max(Y_min<<2, min(Y_max<<2, I16[x] + g));
+			
+		}
+		I16 += stride;
+	}
+
+	// U
+	height_u = min(18, (height_u-y_base));
+	const int stepy = 1;
+	const int stepx = 2;
+	// U: get grain & scale
+	I16 = (uint16*)U;
+	for (y=0; y<height_u; y+=stepy)
+	{
+		for (x=0; x<width; x+=16)
+		{
+			int    s = sign[U_index][x/16];
+			uint8 ox = offset_x[U_index][x/16];
+			uint8 oy = offset_y[U_index][x/16];
+			for (i=0; i<16; i+=stepx) // may overflow past right image border but no problem: allocated space is multiple of 16
+			{
+				uint8 intensity = I16[x+i] >> 2;
+				uint8 pi = pLUT[U_index][intensity] >> 4; // pattern index (integer part) / TODO: try also with zero-shift
+				// TODO: assert(pi < VFGS_MAX_PATTERNS); // out of loop ?
+				uint8 P  = pattern[0][pi][oy + y][ox + i] * s; // We could consider just XORing the sign bit
+				grain_buf[y][x+i] = P;
+				scale_buf[y][x+i] = sLUT[U_index][intensity];
+			}
+		}
+		I16 += cstride;
+	}
+	
+	//Vertical overlap
+	for (y=0; y<2 && overlap; y+=stepy)
+	{
+		uint8 oc1 = y ? 24 : 12; // current
+		uint8 oc2 = y ? 12 : 24; // previous
+		for (x=0; x<width; x+=stepx)
+		{
+			int16 g = round(oc1*grain_buf[y][x+i] + oc2*over_buf[y][x+i], 5);
+			grain_buf[y][x+i] = max(-127, min(+127, g));
+			over_buf[y][x+i] = grain_buf[y+16][x+i];
+		}
+	}
+	//Horizontal deblocking
+	for (y=0; y<16; y+=stepy)
+		for (x=16; x<width; x+=16)
+		{
+			int16 l1, l0, r0, r1;
+			l1 = grain_buf[y][x -2];
+			l0 = grain_buf[y][x -1];
+			r0 = grain_buf[y][x +0];
+			r1 = grain_buf[y][x +1];
+			l1 = round(l1 + 3*l0 + r0, 2); // left
+			r1 = round(l0 + 3*r0 + r1, 2); // right
+			grain_buf[y][x -1] = max(-127, min(+127, l1));
+			grain_buf[y][x +0] = max(-127, min(+127, r1));
+		}
+
+	height_u = min(16, height_u);
+	I16 = (uint16*)U;
+	for (y=0; y<height_u; y+=stepy)
+	{
+		for (x=0; x<width; x+=stepx)
+		{
+			int32 g = round(scale_buf[y][x] * (int16)grain_buf[y][x], scale_shift);
+			I16[x] = max(C_min<<2, min(C_max<<2, I16[x] + g));
+		}
+		I16 += cstride;
+	}
+
+
+	// V
+	height_v = min(18, (height_v-y_base));
+	// V: get grain & scale
+	I16 = (uint16*)V;
+	for (y=0; y<height_v; y+=stepy)
+	{
+		for (x=0; x<width; x+=16)
+		{
+			int    s = sign[V_index][x/16];
+			uint8 ox = offset_x[V_index][x/16];
+			uint8 oy = offset_y[V_index][x/16];
+			for (i=0; i<16; i+=stepx) // may overflow past right image border but no problem: allocated space is multiple of 16
+			{
+				uint8 intensity = I16[x+i] >> 2;
+				uint8 pi = pLUT[V_index][intensity] >> 4; // pattern index (integer part) / TODO: try also with zero-shift
+				// TODO: assert(pi < VFGS_MAX_PATTERNS); // out of loop ?
+				uint8 P  = pattern[0][pi][oy + y][ox + i] * s; // We could consider just XORing the sign bit
+				grain_buf[y][x+i] = P;
+				scale_buf[y][x+i] = sLUT[V_index][intensity];
+			}
+		}
+		I16 += cstride;
+	}
+	
+	//Vertical overlap
+	for (y=0; y<2 && overlap; y+=stepy)
+	{
+		uint8 oc1 = y ? 24 : 12; // current
+		uint8 oc2 = y ? 12 : 24; // previous
+		for (x=0; x<width; x++)
+		{
+			int16 g = round(oc1*grain_buf[y][x+i] + oc2*over_buf[y][x+i], 5);
+			grain_buf[y][x+i] = max(-127, min(+127, g));
+			over_buf[y][x+i] = grain_buf[y+16][x+i];
+		}
+	}
+	//Horizontal deblocking
+	for (y=0; y<16; y+=stepy)
+		for (x=16; x<width; x+=16)
+		{
+			int16 l1, l0, r0, r1;
+			l1 = grain_buf[y][x -2];
+			l0 = grain_buf[y][x -1];
+			r0 = grain_buf[y][x +0];
+			r1 = grain_buf[y][x +1];
+			l1 = round(l1 + 3*l0 + r0, 2); // left
+			r1 = round(l0 + 3*r0 + r1, 2); // right
+			grain_buf[y][x -1] = max(-127, min(+127, l1));
+			grain_buf[y][x +0] = max(-127, min(+127, r1));
+		}
+
+	height_v = min(16, height_v/csuby);
 	I16 = (uint16*)V;
 	for (y=0; y<height_v; y+=stepy)
 	{
 		for (x=0; x<width; x+=stepx)
 		{
 			int32 g = round(scale_buf[y][x] * (int16)grain_buf[y][x], scale_shift);
-			if (bs){
-				//printf("X: %d \n", x);
-				I16[x] = max(C_min<<bs, min(C_max<<bs, I16[x] + g)); }
-			else
-				I8[x] = max(C_min, min(C_max, I8[x] + g));
+
+			I16[x] = max(C_min<<2, min(C_max<<2, I16[x] + g));
 		}
-		I8  += cstride;
 		I16 += cstride;
 	}
 }
 
-void vfgs_add_grain_stripe_444(void* Y, void* U, void* V, unsigned y, unsigned width, unsigned height, unsigned stride, unsigned cstride)
+void vfgs_add_grain_stripe_444_8bits(void* Y, void* U, void* V, unsigned y, unsigned width, unsigned height, unsigned stride, unsigned cstride)
 {
 	unsigned x, i;
 	uint8 *I8;
@@ -1765,7 +1156,6 @@ void vfgs_add_grain_stripe_444(void* Y, void* U, void* V, unsigned y, unsigned w
 
 	// Y: get grain & scale
 	I8 = (uint8*)Y;
-	I16 = (uint16*)Y;
 	for (y=0; y<height; y++)
 	{
 		for (x=0; x<width; x+=16)
@@ -1775,7 +1165,7 @@ void vfgs_add_grain_stripe_444(void* Y, void* U, void* V, unsigned y, unsigned w
 			uint8 oy = offset_y[Y_index][x/16];
 			for (i=0; i<16; i++) // may overflow past right image border but no problem: allocated space is multiple of 16
 			{
-				uint8 intensity = bs ? I16[x+i] >> bs : I8[x+i];
+				uint8 intensity = I8[x+i];
 				uint8 pi = pLUT[Y_index][intensity] >> 4; // pattern index (integer part) / TODO: try also with zero-shift
 				// TODO: assert(pi < VFGS_MAX_PATTERNS); // out of loop ?
 				uint8 P  = pattern[0][pi][oy + y][ox + i] * s; // We could consider just XORing the sign bit
@@ -1784,7 +1174,6 @@ void vfgs_add_grain_stripe_444(void* Y, void* U, void* V, unsigned y, unsigned w
 			}
 		}
 		I8  += stride;
-		I16 += stride;
 	}
 
 	// Y: vertical overlap (merge lines over_buf with 0 & 1, then copy 16 & 17 to over_buf)
@@ -1821,19 +1210,14 @@ void vfgs_add_grain_stripe_444(void* Y, void* U, void* V, unsigned y, unsigned w
 	// Y: scale & merge
 	height = min(16, height);
 	I8 = (uint8*)Y;
-	I16 = (uint16*)Y;
 	for (y=0; y<height; y++)
 	{
 		for (x=0; x<width; x++)
 		{
 			int32 g = round(scale_buf[y][x] * (int16)grain_buf[y][x], scale_shift);
-			if (bs)
-				I16[x] = max(Y_min<<bs, min(Y_max<<bs, I16[x] + g));
-			else
-				I8[x] = max(Y_min, min(Y_max, I8[x] + g));
+			I8[x] = max(Y_min, min(Y_max, I8[x] + g));
 		}
 		I8  += stride;
-		I16 += stride;
 	}
 
 	
@@ -1843,7 +1227,6 @@ void vfgs_add_grain_stripe_444(void* Y, void* U, void* V, unsigned y, unsigned w
 	const int stepx = 1;
 	// U: get grain & scale
 	I8 = (uint8*)U;
-	I16 = (uint16*)U;
 	for (y=0; y<height_u; y+=stepy)
 	{
 		for (x=0; x<width; x+=16)
@@ -1853,7 +1236,7 @@ void vfgs_add_grain_stripe_444(void* Y, void* U, void* V, unsigned y, unsigned w
 			uint8 oy = offset_y[U_index][x/16];
 			for (i=0; i<16; i+=stepx) // may overflow past right image border but no problem: allocated space is multiple of 16
 			{
-				uint8 intensity = bs ? I16[x+i] >> bs : I8[x+i];
+				uint8 intensity = I8[x+i];
 				uint8 pi = pLUT[U_index][intensity] >> 4; // pattern index (integer part) / TODO: try also with zero-shift
 				// TODO: assert(pi < VFGS_MAX_PATTERNS); // out of loop ?
 				uint8 P  = pattern[0][pi][oy + y][ox + i] * s; // We could consider just XORing the sign bit
@@ -1862,7 +1245,6 @@ void vfgs_add_grain_stripe_444(void* Y, void* U, void* V, unsigned y, unsigned w
 			}
 		}
 		I8  += cstride;
-		I16 += cstride;
 	}
 	
 	//Vertical overlap
@@ -1894,19 +1276,14 @@ void vfgs_add_grain_stripe_444(void* Y, void* U, void* V, unsigned y, unsigned w
 
 	height_u = min(16, height_u);
 	I8 = (uint8*)U;
-	I16 = (uint16*)U;
 	for (y=0; y<height_u; y+=stepy)
 	{
 		for (x=0; x<width; x+=stepx)
 		{
 			int32 g = round(scale_buf[y][x] * (int16)grain_buf[y][x], scale_shift);
-			if (bs)
-				I16[x] = max(C_min<<bs, min(C_max<<bs, I16[x] + g));
-			else
-				I8[x] = max(C_min, min(C_max, I8[x] + g));
+			I8[x] = max(C_min, min(C_max, I8[x] + g));
 		}
 		I8  += cstride;
-		I16 += cstride;
 	}
 
 
@@ -1914,7 +1291,6 @@ void vfgs_add_grain_stripe_444(void* Y, void* U, void* V, unsigned y, unsigned w
 	height_v = min(18, (height_v-y_base));
 	// V: get grain & scale
 	I8 = (uint8*)V;
-	I16 = (uint16*)V;
 	for (y=0; y<height_v; y+=stepy)
 	{
 		for (x=0; x<width; x+=16)
@@ -1924,7 +1300,7 @@ void vfgs_add_grain_stripe_444(void* Y, void* U, void* V, unsigned y, unsigned w
 			uint8 oy = offset_y[V_index][x/16];
 			for (i=0; i<16; i+=stepx) // may overflow past right image border but no problem: allocated space is multiple of 16
 			{
-				uint8 intensity = bs ? I16[x+i] >> bs : I8[x+i];
+				uint8 intensity = I8[x+i];
 				uint8 pi = pLUT[V_index][intensity] >> 4; // pattern index (integer part) / TODO: try also with zero-shift
 				// TODO: assert(pi < VFGS_MAX_PATTERNS); // out of loop ?
 				uint8 P  = pattern[0][pi][oy + y][ox + i] * s; // We could consider just XORing the sign bit
@@ -1933,7 +1309,6 @@ void vfgs_add_grain_stripe_444(void* Y, void* U, void* V, unsigned y, unsigned w
 			}
 		}
 		I8  += cstride;
-		I16 += cstride;
 	}
 	
 	//Vertical overlap
@@ -1965,19 +1340,247 @@ void vfgs_add_grain_stripe_444(void* Y, void* U, void* V, unsigned y, unsigned w
 
 	height_v = min(16, height_v/csuby);
 	I8 = (uint8*)V;
+	for (y=0; y<height_v; y+=stepy)
+	{
+		for (x=0; x<width; x+=stepx)
+		{
+			int32 g = round(scale_buf[y][x] * (int16)grain_buf[y][x], scale_shift);
+			I8[x] = max(C_min, min(C_max, I8[x] + g));
+		}
+		I8  += cstride;
+	}
+}
+
+void vfgs_add_grain_stripe_444_10bits(void* Y, void* U, void* V, unsigned y, unsigned width, unsigned height, unsigned stride, unsigned cstride)
+{
+	unsigned x, i;
+	uint8 *I8;
+	uint16 *I16;
+	int overlap=0;
+	int y_base = 0;
+	unsigned height_u = height;
+	unsigned height_v = height;
+
+	// TODO could assert(height%16) if YUV memory is padded properly
+	assert(width>128 && width<=4096 && width<=stride);
+	assert((stride & 0x0f) == 0 && stride<=4096);
+	assert((y & 0x0f) == 0);
+	assert(bs == 0 || bs == 2);
+	assert(scale_shift + bs >= 8 && scale_shift + bs <= 13);
+	// TODO: assert subx, suby, Y/C min/max, max pLUT values, etc
+
+	// Generate random offsets
+	for (x=0; x<width; x+=16)
+	{
+		int s[3];
+		get_offset_y(rnd, &s[Y_index], &offset_x[Y_index][x/16], &offset_y[Y_index][x/16]);
+		get_offset_u(rnd, &s[U_index], &offset_x[U_index][x/16], &offset_y[U_index][x/16]);
+		get_offset_v(rnd, &s[V_index], &offset_x[V_index][x/16], &offset_y[V_index][x/16]);
+		rnd = prng(rnd);
+		sign[Y_index][x/16] = s[Y_index];
+		sign[U_index][x/16] = s[U_index];
+		sign[V_index][x/16] = s[V_index];
+	}
+
+	// Compute stripe height (including overlap for next stripe)
+	overlap = (y > 0);
+	height = min(18, height-y);
+	y_base = y;
+
+	// Y: get grain & scale
+	I16 = (uint16*)Y;
+	for (y=0; y<height; y++)
+	{
+		for (x=0; x<width; x+=16)
+		{
+			int    s = sign[Y_index][x/16];
+			uint8 ox = offset_x[Y_index][x/16];
+			uint8 oy = offset_y[Y_index][x/16];
+			for (i=0; i<16; i++) // may overflow past right image border but no problem: allocated space is multiple of 16
+			{
+				uint8 intensity = I16[x+i] >> 2;
+				uint8 pi = pLUT[Y_index][intensity] >> 4; // pattern index (integer part) / TODO: try also with zero-shift
+				// TODO: assert(pi < VFGS_MAX_PATTERNS); // out of loop ?
+				uint8 P  = pattern[0][pi][oy + y][ox + i] * s; // We could consider just XORing the sign bit
+				grain_buf[y][x+i] = P;
+				scale_buf[y][x+i] = sLUT[Y_index][intensity];
+			}
+		}
+		I16 += stride;
+	}
+
+	// Y: vertical overlap (merge lines over_buf with 0 & 1, then copy 16 & 17 to over_buf)
+	// problem: need to store 9-bits now ? or just clip ?
+	for (y=0; y<2 && overlap; y++)
+	{
+		uint8 oc1 = y ? 24 : 12; // current
+		uint8 oc2 = y ? 12 : 24; // previous
+		for (x=0; x<width; x++)
+		{
+			int16 g = round(oc1*grain_buf[y][x+i] + oc2*over_buf[y][x+i], 5);
+			grain_buf[y][x+i] = max(-127, min(+127, g));
+			over_buf[y][x+i] = grain_buf[y+16][x+i];
+		}
+	}
+
+	// Y: horizontal deblock
+	// problem: need to store 9-bits now ? or just clip ?
+	// TODO: set grain_buf[y][width] to zero if width == K*16 +1 (to avoid filtering garbage)
+	for (y=0; y<16; y++)
+		for (x=16; x<width; x+=16)
+		{
+			int16 l1, l0, r0, r1;
+			l1 = grain_buf[y][x -2];
+			l0 = grain_buf[y][x -1];
+			r0 = grain_buf[y][x +0];
+			r1 = grain_buf[y][x +1];
+			l1 = round(l1 + 3*l0 + r0, 2); // left
+			r1 = round(l0 + 3*r0 + r1, 2); // right
+			grain_buf[y][x -1] = max(-127, min(+127, l1));
+			grain_buf[y][x +0] = max(-127, min(+127, r1));
+		}
+
+	// Y: scale & merge
+	height = min(16, height);
+	I16 = (uint16*)Y;
+	for (y=0; y<height; y++)
+	{
+		for (x=0; x<width; x++)
+		{
+			int32 g = round(scale_buf[y][x] * (int16)grain_buf[y][x], scale_shift);
+			I16[x] = max(Y_min<<2, min(Y_max<<2, I16[x] + g));
+			
+		}
+		I16 += stride;
+	}
+
+	// U
+	height_u = min(18, (height_u-y_base));
+	const int stepy = 1;
+	const int stepx = 1;
+	// U: get grain & scale
+	I16 = (uint16*)U;
+	for (y=0; y<height_u; y+=stepy)
+	{
+		for (x=0; x<width; x+=16)
+		{
+			int    s = sign[U_index][x/16];
+			uint8 ox = offset_x[U_index][x/16];
+			uint8 oy = offset_y[U_index][x/16];
+			for (i=0; i<16; i+=stepx) // may overflow past right image border but no problem: allocated space is multiple of 16
+			{
+				uint8 intensity = I16[x+i] >> 2;
+				uint8 pi = pLUT[U_index][intensity] >> 4; // pattern index (integer part) / TODO: try also with zero-shift
+				// TODO: assert(pi < VFGS_MAX_PATTERNS); // out of loop ?
+				uint8 P  = pattern[0][pi][oy + y][ox + i] * s; // We could consider just XORing the sign bit
+				grain_buf[y][x+i] = P;
+				scale_buf[y][x+i] = sLUT[U_index][intensity];
+			}
+		}
+		I16 += cstride;
+	}
+	
+	//Vertical overlap
+	for (y=0; y<2 && overlap; y+=stepy)
+	{
+		uint8 oc1 = y ? 24 : 12; // current
+		uint8 oc2 = y ? 12 : 24; // previous
+		for (x=0; x<width; x+=stepx)
+		{
+			int16 g = round(oc1*grain_buf[y][x+i] + oc2*over_buf[y][x+i], 5);
+			grain_buf[y][x+i] = max(-127, min(+127, g));
+			over_buf[y][x+i] = grain_buf[y+16][x+i];
+		}
+	}
+	//Horizontal deblocking
+	for (y=0; y<16; y+=stepy)
+		for (x=16; x<width; x+=16)
+		{
+			int16 l1, l0, r0, r1;
+			l1 = grain_buf[y][x -2];
+			l0 = grain_buf[y][x -1];
+			r0 = grain_buf[y][x +0];
+			r1 = grain_buf[y][x +1];
+			l1 = round(l1 + 3*l0 + r0, 2); // left
+			r1 = round(l0 + 3*r0 + r1, 2); // right
+			grain_buf[y][x -1] = max(-127, min(+127, l1));
+			grain_buf[y][x +0] = max(-127, min(+127, r1));
+		}
+
+	height_u = min(16, height_u);
+	I16 = (uint16*)U;
+	for (y=0; y<height_u; y+=stepy)
+	{
+		for (x=0; x<width; x+=stepx)
+		{
+			int32 g = round(scale_buf[y][x] * (int16)grain_buf[y][x], scale_shift);
+			I16[x] = max(C_min<<2, min(C_max<<2, I16[x] + g));
+		}
+		I16 += cstride;
+	}
+
+
+	// V
+	height_v = min(18, (height_v-y_base));
+	// V: get grain & scale
+	I16 = (uint16*)V;
+	for (y=0; y<height_v; y+=stepy)
+	{
+		for (x=0; x<width; x+=16)
+		{
+			int    s = sign[V_index][x/16];
+			uint8 ox = offset_x[V_index][x/16];
+			uint8 oy = offset_y[V_index][x/16];
+			for (i=0; i<16; i+=stepx) // may overflow past right image border but no problem: allocated space is multiple of 16
+			{
+				uint8 intensity = I16[x+i] >> 2;
+				uint8 pi = pLUT[V_index][intensity] >> 4; // pattern index (integer part) / TODO: try also with zero-shift
+				// TODO: assert(pi < VFGS_MAX_PATTERNS); // out of loop ?
+				uint8 P  = pattern[0][pi][oy + y][ox + i] * s; // We could consider just XORing the sign bit
+				grain_buf[y][x+i] = P;
+				scale_buf[y][x+i] = sLUT[V_index][intensity];
+			}
+		}
+		I16 += cstride;
+	}
+	
+	//Vertical overlap
+	for (y=0; y<2 && overlap; y+=stepy)
+	{
+		uint8 oc1 = y ? 24 : 12; // current
+		uint8 oc2 = y ? 12 : 24; // previous
+		for (x=0; x<width; x++)
+		{
+			int16 g = round(oc1*grain_buf[y][x+i] + oc2*over_buf[y][x+i], 5);
+			grain_buf[y][x+i] = max(-127, min(+127, g));
+			over_buf[y][x+i] = grain_buf[y+16][x+i];
+		}
+	}
+	//Horizontal deblocking
+	for (y=0; y<16; y+=stepy)
+		for (x=16; x<width; x+=16)
+		{
+			int16 l1, l0, r0, r1;
+			l1 = grain_buf[y][x -2];
+			l0 = grain_buf[y][x -1];
+			r0 = grain_buf[y][x +0];
+			r1 = grain_buf[y][x +1];
+			l1 = round(l1 + 3*l0 + r0, 2); // left
+			r1 = round(l0 + 3*r0 + r1, 2); // right
+			grain_buf[y][x -1] = max(-127, min(+127, l1));
+			grain_buf[y][x +0] = max(-127, min(+127, r1));
+		}
+
+	height_v = min(16, height_v/csuby);
 	I16 = (uint16*)V;
 	for (y=0; y<height_v; y+=stepy)
 	{
 		for (x=0; x<width; x+=stepx)
 		{
 			int32 g = round(scale_buf[y][x] * (int16)grain_buf[y][x], scale_shift);
-			if (bs){
-				//printf("X: %d \n", x);
-				I16[x] = max(C_min<<bs, min(C_max<<bs, I16[x] + g)); }
-			else
-				I8[x] = max(C_min, min(C_max, I8[x] + g));
+
+			I16[x] = max(C_min<<2, min(C_max<<2, I16[x] + g));
 		}
-		I8  += cstride;
 		I16 += cstride;
 	}
 }
@@ -2082,15 +1685,24 @@ void vfgs_set_chroma_subsampling(int subx, int suby)
 
 	if(subx == 2 && suby == 2)
 	{
-		ptr_add_grain_stripe = vfgs_add_grain_stripe_420;
+		if(bs == 2)
+			ptr_add_grain_stripe = vfgs_add_grain_stripe_420_10bits;
+		else
+			ptr_add_grain_stripe = vfgs_add_grain_stripe_420_8bits;
 	}
 	else if(subx == 2 && suby ==1)
 	{
-		ptr_add_grain_stripe = vfgs_add_grain_stripe_422;
+		if(bs == 2)
+			ptr_add_grain_stripe = vfgs_add_grain_stripe_422_10bits;
+		else
+			ptr_add_grain_stripe = vfgs_add_grain_stripe_422_8bits;
 	}
 	else
 	{
-		ptr_add_grain_stripe = vfgs_add_grain_stripe_444;
+		if(bs == 2)
+			ptr_add_grain_stripe = vfgs_add_grain_stripe_444_10bits;
+		else
+			ptr_add_grain_stripe = vfgs_add_grain_stripe_444_8bits;
 	}
 }
 
