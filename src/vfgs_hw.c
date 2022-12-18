@@ -150,7 +150,7 @@ static void get_offset_v(uint32 rnd, int *s, uint8 *x, uint8 *y)
 	bf = (rnd >> 4) & 0x3ff;
 	*y = ((bf * 12) >> 10) * (4/csuby);
 }
-
+/*
 static void add_grain_block(void* I, int c, int x, int y, int width)
 {
 	uint8 *I8 = (uint8*)I;
@@ -1181,11 +1181,11 @@ static void add_grain_block_V444(void* I, int c, int x, int y, int width)
 			x += 16;
 		}
 	} while (flush == 1);
-}
+}*/
 
 
 /* Public interface ***********************************************************/
-
+/*
 void vfgs_add_grain_line(void* Y, void* U, void* V, int y, int width)
 {
 	// Generate / backup / restore per-line random seeds (needed to make multi-line blocks)
@@ -1214,7 +1214,7 @@ void vfgs_add_grain_line(void* Y, void* U, void* V, int y, int width)
 		
 	}
 
-}
+}*/
 
 void vfgs_add_grain_stripe(void* Y, void* U, void* V, unsigned y, unsigned width, unsigned height, unsigned stride, unsigned cstride)
 {
@@ -1223,6 +1223,8 @@ void vfgs_add_grain_stripe(void* Y, void* U, void* V, unsigned y, unsigned width
 	uint16 *I16;
 	int overlap=0;
 	int y_base = 0;
+	unsigned height_u = height;
+	unsigned height_v = height;
 
 	// TODO could assert(height%16) if YUV memory is padded properly
 	assert(width>128 && width<=4096 && width<=stride);
@@ -1323,14 +1325,15 @@ void vfgs_add_grain_stripe(void* Y, void* U, void* V, unsigned y, unsigned width
 		I16 += stride;
 	}
 
+	
 	// U
-	height = min(18, (height-y_base));
+	height_u = min(18, (height_u-y_base));
 	int stepy = csuby == 1 ? 1 : 2;
 	int stepx = csubx == 1 ? 1 : 2;
 	// U: get grain & scale
 	I8 = (uint8*)U;
 	I16 = (uint16*)U;
-	for (y=0; y<height; y+=stepy)
+	for (y=0; y<height_u; y++)
 	{
 		for (x=0; x<width; x+=16)
 		{
@@ -1352,7 +1355,7 @@ void vfgs_add_grain_stripe(void* Y, void* U, void* V, unsigned y, unsigned width
 	}
 	
 	//Vertical overlap
-	for (y=0; y<2 && overlap; y+=stepy)
+	for (y=0; y<2 && overlap; y++)
 	{
 		uint8 oc1 = y ? 24 : 12; // current
 		uint8 oc2 = y ? 12 : 24; // previous
@@ -1364,7 +1367,7 @@ void vfgs_add_grain_stripe(void* Y, void* U, void* V, unsigned y, unsigned width
 		}
 	}
 	//Horizontal deblocking
-	for (y=0; y<16; y+=stepy)
+	for (y=0; y<16; y++)
 		for (x=16; x<width; x+=16)
 		{
 			int16 l1, l0, r0, r1;
@@ -1378,12 +1381,12 @@ void vfgs_add_grain_stripe(void* Y, void* U, void* V, unsigned y, unsigned width
 			grain_buf[y][x +0] = max(-127, min(+127, r1));
 		}
 
-	height = min(16, height);
+	height_u = min(16, height_u);
 	I8 = (uint8*)U;
 	I16 = (uint16*)U;
-	for (y=0; y<height; y+=stepy)
+	for (y=0; y<height_u; y++)
 	{
-		for (x=0; x<width; x+=stepx)
+		for (x=0; x<width; x++)
 		{
 			int32 g = round(scale_buf[y][x] * (int16)grain_buf[y][x], scale_shift);
 			if (bs)
@@ -1397,11 +1400,11 @@ void vfgs_add_grain_stripe(void* Y, void* U, void* V, unsigned y, unsigned width
 
 
 	// V
-	height = min(18, (height-y_base));
+	height_v = min(18, (height_v-y_base));
 	// V: get grain & scale
 	I8 = (uint8*)V;
 	I16 = (uint16*)V;
-	for (y=0; y<height; y+=stepy)
+	for (y=0; y<height_v; y++)
 	{
 		for (x=0; x<width; x+=16)
 		{
@@ -1423,11 +1426,11 @@ void vfgs_add_grain_stripe(void* Y, void* U, void* V, unsigned y, unsigned width
 	}
 	
 	//Vertical overlap
-	for (y=0; y<2 && overlap; y+=stepy)
+	for (y=0; y<2 && overlap; y++)
 	{
 		uint8 oc1 = y ? 24 : 12; // current
 		uint8 oc2 = y ? 12 : 24; // previous
-		for (x=0; x<width; x+=stepx)
+		for (x=0; x<width; x++)
 		{
 			int16 g = round(oc1*grain_buf[y][x+i] + oc2*over_buf[y][x+i], 5);
 			grain_buf[y][x+i] = max(-127, min(+127, g));
@@ -1435,7 +1438,7 @@ void vfgs_add_grain_stripe(void* Y, void* U, void* V, unsigned y, unsigned width
 		}
 	}
 	//Horizontal deblocking
-	for (y=0; y<16; y+=stepy)
+	for (y=0; y<16; y++)
 		for (x=16; x<width; x+=16)
 		{
 			int16 l1, l0, r0, r1;
@@ -1449,10 +1452,10 @@ void vfgs_add_grain_stripe(void* Y, void* U, void* V, unsigned y, unsigned width
 			grain_buf[y][x +0] = max(-127, min(+127, r1));
 		}
 
-	height = min(16, height/csuby);
+	height_v = min(16, height_v/csuby);
 	I8 = (uint8*)V;
 	I16 = (uint16*)V;
-	for (y=0; y<height; y++)
+	for (y=0; y<height_v; y++)
 	{
 		for (x=0; x<width; x++)
 		{
@@ -1540,7 +1543,7 @@ void vfgs_set_chroma_subsampling(int subx, int suby)
 	assert(suby==1 || suby==2);
 	csubx = subx;
 	csuby = suby;
-
+	/*
 	if(subx == 2 && suby == 2)
 	{
 		ptr_add_grain_block_Y = add_grain_block_Y;
@@ -1558,6 +1561,6 @@ void vfgs_set_chroma_subsampling(int subx, int suby)
 		ptr_add_grain_block_Y = add_grain_block_Y;
 		ptr_add_grain_block_U = add_grain_block_U444;
 		ptr_add_grain_block_V = add_grain_block_V444;
-	}
+	}*/
 }
 
