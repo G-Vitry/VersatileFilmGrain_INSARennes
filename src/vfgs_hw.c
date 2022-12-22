@@ -39,6 +39,9 @@
 #include <assert.h>
 #include <stdio.h>
 
+#include <emmintrin.h>
+#include <immintrin.h>
+
 #define min(a,b) ((a)<(b)?(a):(b))
 #define max(a,b) ((a)>(b)?(a):(b))
 #define round(a,s) (((a)+(1<<((s)-1)))>>(s))
@@ -48,6 +51,48 @@
 #define Y_index 0
 #define U_index 1
 #define V_index 2
+
+//Define some missing intrinsics
+
+#ifndef intrsc_attrs
+#ifdef __INTEL_COMPILER
+#   define intrsc_attrs __attribute__((__gnu_inline__, __always_inline__, __artificial__)) //, __artificial__
+#else
+#   define intrsc_attrs __attribute__((__gnu_inline__, __always_inline__)) //, __artificial__
+#endif
+#endif
+
+#ifndef static_inline
+#   define static_inline static __inline__ intrsc_attrs
+#endif
+
+
+static_inline __m128i intrsc_attrs _mm_srl_epi8(__m128i a, __m128i b) { // 5-7 cycles ...
+    return _mm_and_si128(_mm_srl_epi16(a, b), _mm_set1_epi8(0xFFU >> _mm_cvtsi128_si64(b)));
+}
+
+
+static_inline __m128i _mm_mullo_epi8(__m128i a, __m128i b) {
+    return
+#       ifdef __SSSE3__
+            _mm_unpacklo_epi8( // ~11 cycles, assuming both *set* get translated to a single fast load (which it does at least with 'clang -Ofast')
+                _mm_shuffle_epi8(
+                    _mm_mullo_epi16(a, b),
+                    _mm_set_epi8(0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 14, 12, 10, 8, 6, 4, 2, 0)
+                ),
+                _mm_shuffle_epi8(
+                    _mm_mullo_epi16(_mm_srli_epi16(a, 8), _mm_srli_epi16(b, 8)),
+                    _mm_set_epi8(0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 14, 12, 10, 8, 6, 4, 2, 0)
+                )
+            )
+#       else
+            _mm_or_si128( // ~12 cycles
+                _mm_srli_epi16(_mm_slli_epi16(_mm_mullo_epi16(a, b), 8), 8),
+                _mm_slli_epi16(_mm_mullo_epi16(_mm_srli_epi16(a, 8), _mm_srli_epi16(b, 8)), 8)
+            )
+#       endif
+    ;
+}
 
 /* void (*ptr_add_grain_block_Y)(void* , int, int , int , int );
 void (*ptr_add_grain_block_U)(void* I, int, int , int , int );
@@ -226,10 +271,71 @@ void vfgs_add_grain_stripe_420_8bits(void* Y, void* U, void* V, unsigned y, unsi
 	{
 		for (x=0; x<width; x+=16)
 		{
-			int    s = sign[Y_index][x/16];
+			//int    s = sign[Y_index][x/16];
 			uint8 ox = offset_x[Y_index][x/16];
 			uint8 oy = offset_y[Y_index][x/16];
-			for (i=0; i<16; i++) // may overflow past right image border but no problem: allocated space is multiple of 16
+
+			__m128i _intensity, _pi, _P, _piLUT_inter, _shift, _s;
+            _shift = _mm_set1_epi8(4);
+            _s = _mm_set1_epi8(sign[0][x/16]);
+            _intensity = _mm_loadu_si128((__m128i*)&I8[x]);
+
+			_piLUT_inter = _mm_set_epi8(pLUT[0][_mm_extract_epi8(_intensity, 15)],
+										pLUT[0][_mm_extract_epi8(_intensity, 14)],
+										pLUT[0][_mm_extract_epi8(_intensity, 13)],
+										pLUT[0][_mm_extract_epi8(_intensity, 12)],
+										pLUT[0][_mm_extract_epi8(_intensity, 11)],
+										pLUT[0][_mm_extract_epi8(_intensity, 10)],
+										pLUT[0][_mm_extract_epi8(_intensity, 9)],
+										pLUT[0][_mm_extract_epi8(_intensity, 8)],
+										pLUT[0][_mm_extract_epi8(_intensity, 7)],
+										pLUT[0][_mm_extract_epi8(_intensity, 6)],
+										pLUT[0][_mm_extract_epi8(_intensity, 5)],
+										pLUT[0][_mm_extract_epi8(_intensity, 4)],
+										pLUT[0][_mm_extract_epi8(_intensity, 3)],
+										pLUT[0][_mm_extract_epi8(_intensity, 2)],
+										pLUT[0][_mm_extract_epi8(_intensity, 1)],
+										pLUT[0][_mm_extract_epi8(_intensity, 0)]);
+
+
+            _pi = (__m128i)_mm_srl_epi8(_piLUT_inter, _shift);
+			_P = _mm_set_epi8(pattern[0][_mm_extract_epi8(_pi, 15)][oy + y][ox + 15],
+							  pattern[0][_mm_extract_epi8(_pi, 14)][oy + y][ox + 14],
+							  pattern[0][_mm_extract_epi8(_pi, 13)][oy + y][ox + 13],
+							  pattern[0][_mm_extract_epi8(_pi, 12)][oy + y][ox + 12],
+							  pattern[0][_mm_extract_epi8(_pi, 11)][oy + y][ox + 11],
+							  pattern[0][_mm_extract_epi8(_pi, 10)][oy + y][ox + 10],
+							  pattern[0][_mm_extract_epi8(_pi, 9)][oy + y][ox + 9],
+							  pattern[0][_mm_extract_epi8(_pi, 8)][oy + y][ox + 8],
+							  pattern[0][_mm_extract_epi8(_pi, 7)][oy + y][ox + 7],
+							  pattern[0][_mm_extract_epi8(_pi, 6)][oy + y][ox + 6],
+							  pattern[0][_mm_extract_epi8(_pi, 5)][oy + y][ox + 5],
+							  pattern[0][_mm_extract_epi8(_pi, 4)][oy + y][ox + 4],
+							  pattern[0][_mm_extract_epi8(_pi, 3)][oy + y][ox + 3],
+							  pattern[0][_mm_extract_epi8(_pi, 2)][oy + y][ox + 2],
+							  pattern[0][_mm_extract_epi8(_pi, 1)][oy + y][ox + 1],
+							  pattern[0][_mm_extract_epi8(_pi, 0)][oy + y][ox + 0]);
+            _P = _mm_mullo_epi8(_P, _s);
+
+            _mm_store_si128((__m128i*)&grain_buf[y], _P);
+			scale_buf[y][x] = sLUT[0][_mm_extract_epi8(_intensity, 0)];
+			scale_buf[y][x+1] = sLUT[0][_mm_extract_epi8(_intensity, 1)];
+			scale_buf[y][x+2] = sLUT[0][_mm_extract_epi8(_intensity, 2)];
+			scale_buf[y][x+3] = sLUT[0][_mm_extract_epi8(_intensity, 3)];
+			scale_buf[y][x+4] = sLUT[0][_mm_extract_epi8(_intensity, 4)];
+			scale_buf[y][x+5] = sLUT[0][_mm_extract_epi8(_intensity, 5)];
+			scale_buf[y][x+6] = sLUT[0][_mm_extract_epi8(_intensity, 6)];
+			scale_buf[y][x+7] = sLUT[0][_mm_extract_epi8(_intensity, 7)];
+			scale_buf[y][x+8] = sLUT[0][_mm_extract_epi8(_intensity, 8)];
+			scale_buf[y][x+9] = sLUT[0][_mm_extract_epi8(_intensity, 9)];
+			scale_buf[y][x+10] = sLUT[0][_mm_extract_epi8(_intensity, 10)];
+			scale_buf[y][x+11] = sLUT[0][_mm_extract_epi8(_intensity, 11)];
+			scale_buf[y][x+12] = sLUT[0][_mm_extract_epi8(_intensity, 12)];
+			scale_buf[y][x+13] = sLUT[0][_mm_extract_epi8(_intensity, 13)];
+			scale_buf[y][x+14] = sLUT[0][_mm_extract_epi8(_intensity, 14)];
+			scale_buf[y][x+15] = sLUT[0][_mm_extract_epi8(_intensity, 15)];
+
+			/*for (i=0; i<16; i++) // may overflow past right image border but no problem: allocated space is multiple of 16
 			{
 				uint8 intensity = I8[x+i];
 				uint8 pi = pLUT[Y_index][intensity] >> 4; // pattern index (integer part) / TODO: try also with zero-shift
@@ -237,7 +343,7 @@ void vfgs_add_grain_stripe_420_8bits(void* Y, void* U, void* V, unsigned y, unsi
 				uint8 P  = pattern[0][pi][oy + y][ox + i] * s; // We could consider just XORing the sign bit
 				grain_buf[y][x+i] = P;
 				scale_buf[y][x+i] = sLUT[Y_index][intensity];
-			}
+			}*/
 		}
 		I8  += stride;
 	}
