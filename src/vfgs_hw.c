@@ -536,8 +536,8 @@ void vfgs_add_grain_stripe_420_10bits(void* Y, void* U, void* V, unsigned y, uns
 	__m128i _intensity, _pi, _P, _piLUT_inter, _shift_4, _s, _shift_2;
 	__m256i _intensity_inter;
 
-	_shift_4 = _mm_set1_epi8(4);
-	_shift_2 = _mm_set1_epi8(2);
+	_shift_4 = _mm_set_epi8(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4);
+	_shift_2 = _mm_set_epi8(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2);
 
 	// TODO could assert(height%16) if YUV memory is padded properly
 	assert(width>128 && width<=4096 && width<=stride);
@@ -580,7 +580,23 @@ void vfgs_add_grain_stripe_420_10bits(void* Y, void* U, void* V, unsigned y, uns
             _intensity_inter = _mm256_loadu_si256((__m256i*)&I16[x]);
 			_intensity_inter = (__m256i)_mm256_srl_epi16(_intensity_inter, _shift_2);
 
-			_intensity = _mm256_castsi256_si128(_intensity_inter);
+			// We need to retrieve the LSB of each 16 bits integer
+			_intensity = _mm_set_epi8(_mm256_extract_epi8(_intensity_inter, 30),
+									  _mm256_extract_epi8(_intensity_inter, 28),
+									  _mm256_extract_epi8(_intensity_inter, 26),
+									  _mm256_extract_epi8(_intensity_inter, 24),
+									  _mm256_extract_epi8(_intensity_inter, 22),
+									  _mm256_extract_epi8(_intensity_inter, 20),
+									  _mm256_extract_epi8(_intensity_inter, 18),
+									  _mm256_extract_epi8(_intensity_inter, 16),
+									  _mm256_extract_epi8(_intensity_inter, 14),
+									  _mm256_extract_epi8(_intensity_inter, 12),
+									  _mm256_extract_epi8(_intensity_inter, 10),
+									  _mm256_extract_epi8(_intensity_inter, 8),
+									  _mm256_extract_epi8(_intensity_inter, 6),
+									  _mm256_extract_epi8(_intensity_inter, 4),
+									  _mm256_extract_epi8(_intensity_inter, 2),
+									  _mm256_extract_epi8(_intensity_inter, 0));
 
 			_piLUT_inter = _mm_set_epi8(pLUT[0][_mm_extract_epi8(_intensity, 15)],
 										pLUT[0][_mm_extract_epi8(_intensity, 14)],
@@ -619,7 +635,7 @@ void vfgs_add_grain_stripe_420_10bits(void* Y, void* U, void* V, unsigned y, uns
 							  pattern[0][_mm_extract_epi8(_pi, 0)][oy + y][ox + 0]);
             _P = _mm_mullo_epi8(_P, _s);
 
-            _mm_store_si128((__m128i*)&grain_buf[y], _P);
+            _mm_store_si128((__m128i*)&grain_buf[y][x], _P);
 			scale_buf[y][x] = sLUT[0][_mm_extract_epi8(_intensity, 0)];
 			scale_buf[y][x+1] = sLUT[0][_mm_extract_epi8(_intensity, 1)];
 			scale_buf[y][x+2] = sLUT[0][_mm_extract_epi8(_intensity, 2)];
@@ -658,9 +674,9 @@ void vfgs_add_grain_stripe_420_10bits(void* Y, void* U, void* V, unsigned y, uns
 		uint8 oc2 = y ? 12 : 24; // previous
 		for (x=0; x<width; x++)
 		{
-			int16 g = round(oc1*grain_buf[y][x+i] + oc2*over_buf[y][x+i], 5);
-			grain_buf[y][x+i] = max(-127, min(+127, g));
-			over_buf[y][x+i] = grain_buf[y+16][x+i];
+			int16 g = round(oc1*grain_buf[y][x] + oc2*over_buf[y][x], 5);
+			grain_buf[y][x] = max(-127, min(+127, g));
+			over_buf[y][x] = grain_buf[y][x];
 		}
 	}
 
@@ -715,7 +731,23 @@ void vfgs_add_grain_stripe_420_10bits(void* Y, void* U, void* V, unsigned y, uns
             _intensity_inter = _mm256_loadu_si256((__m256i*)&I16[x]);
 			_intensity_inter = (__m256i)_mm256_srl_epi16(_intensity_inter, _shift_2);
 
-			_intensity = _mm256_castsi256_si128(_intensity_inter);
+			//_intensity = _mm256_castsi256_si128(_intensity_inter);
+			_intensity = _mm_set_epi8(_mm256_extract_epi8(_intensity_inter, 30),
+									  _mm256_extract_epi8(_intensity_inter, 28),
+									  _mm256_extract_epi8(_intensity_inter, 26),
+									  _mm256_extract_epi8(_intensity_inter, 24),
+									  _mm256_extract_epi8(_intensity_inter, 22),
+									  _mm256_extract_epi8(_intensity_inter, 20),
+									  _mm256_extract_epi8(_intensity_inter, 18),
+									  _mm256_extract_epi8(_intensity_inter, 16),
+									  _mm256_extract_epi8(_intensity_inter, 14),
+									  _mm256_extract_epi8(_intensity_inter, 12),
+									  _mm256_extract_epi8(_intensity_inter, 10),
+									  _mm256_extract_epi8(_intensity_inter, 8),
+									  _mm256_extract_epi8(_intensity_inter, 6),
+									  _mm256_extract_epi8(_intensity_inter, 4),
+									  _mm256_extract_epi8(_intensity_inter, 2),
+									  _mm256_extract_epi8(_intensity_inter, 0));
 
 			_piLUT_inter = _mm_set_epi8(pLUT[U_index][_mm_extract_epi8(_intensity, 15)],
 										pLUT[U_index][_mm_extract_epi8(_intensity, 14)],
@@ -754,7 +786,7 @@ void vfgs_add_grain_stripe_420_10bits(void* Y, void* U, void* V, unsigned y, uns
 							  pattern[1][_mm_extract_epi8(_pi, 0)][oy + y][ox + 0]);
             _P = _mm_mullo_epi8(_P, _s);
 
-            _mm_store_si128((__m128i*)&grain_buf[y], _P);
+            _mm_store_si128((__m128i*)&grain_buf[y][x], _P);
 			scale_buf[y][x] = sLUT[U_index][_mm_extract_epi8(_intensity, 0)];
 			scale_buf[y][x+1] = sLUT[U_index][_mm_extract_epi8(_intensity, 1)];
 			scale_buf[y][x+2] = sLUT[U_index][_mm_extract_epi8(_intensity, 2)];
@@ -793,9 +825,9 @@ void vfgs_add_grain_stripe_420_10bits(void* Y, void* U, void* V, unsigned y, uns
 		uint8 oc2 = y ? 12 : 24; // previous
 		for (x=0; x<width; x+=stepx)
 		{
-			int16 g = round(oc1*grain_buf[y][x+i] + oc2*over_buf[y][x+i], 5);
-			grain_buf[y][x+i] = max(-127, min(+127, g));
-			over_buf[y][x+i] = grain_buf[y+16][x+i];
+			int16 g = round(oc1*grain_buf[y][x] + oc2*over_buf[y][x], 5);
+			grain_buf[y][x] = max(-127, min(+127, g));
+			over_buf[y][x] = grain_buf[y+16][x];
 		}
 	}
 	//Horizontal deblocking
@@ -843,7 +875,22 @@ void vfgs_add_grain_stripe_420_10bits(void* Y, void* U, void* V, unsigned y, uns
             _intensity_inter = _mm256_loadu_si256((__m256i*)&I16[x]);
 			_intensity_inter = (__m256i)_mm256_srl_epi16(_intensity_inter, _shift_2);
 
-			_intensity = _mm256_castsi256_si128(_intensity_inter);
+			_intensity = _mm_set_epi8(_mm256_extract_epi8(_intensity_inter, 30),
+									  _mm256_extract_epi8(_intensity_inter, 28),
+									  _mm256_extract_epi8(_intensity_inter, 26),
+									  _mm256_extract_epi8(_intensity_inter, 24),
+									  _mm256_extract_epi8(_intensity_inter, 22),
+									  _mm256_extract_epi8(_intensity_inter, 20),
+									  _mm256_extract_epi8(_intensity_inter, 18),
+									  _mm256_extract_epi8(_intensity_inter, 16),
+									  _mm256_extract_epi8(_intensity_inter, 14),
+									  _mm256_extract_epi8(_intensity_inter, 12),
+									  _mm256_extract_epi8(_intensity_inter, 10),
+									  _mm256_extract_epi8(_intensity_inter, 8),
+									  _mm256_extract_epi8(_intensity_inter, 6),
+									  _mm256_extract_epi8(_intensity_inter, 4),
+									  _mm256_extract_epi8(_intensity_inter, 2),
+									  _mm256_extract_epi8(_intensity_inter, 0));
 
 			_piLUT_inter = _mm_set_epi8(pLUT[Y_index][_mm_extract_epi8(_intensity, 15)],
 										pLUT[Y_index][_mm_extract_epi8(_intensity, 14)],
@@ -882,7 +929,7 @@ void vfgs_add_grain_stripe_420_10bits(void* Y, void* U, void* V, unsigned y, uns
 							  pattern[1][_mm_extract_epi8(_pi, 0)][oy + y][ox + 0]);
             _P = _mm_mullo_epi8(_P, _s);
 
-            _mm_store_si128((__m128i*)&grain_buf[y], _P);
+            _mm_store_si128((__m128i*)&grain_buf[y][x], _P);
 			scale_buf[y][x] = sLUT[Y_index][_mm_extract_epi8(_intensity, 0)];
 			scale_buf[y][x+1] = sLUT[Y_index][_mm_extract_epi8(_intensity, 1)];
 			scale_buf[y][x+2] = sLUT[Y_index][_mm_extract_epi8(_intensity, 2)];
@@ -920,9 +967,9 @@ void vfgs_add_grain_stripe_420_10bits(void* Y, void* U, void* V, unsigned y, uns
 		uint8 oc2 = y ? 12 : 24; // previous
 		for (x=0; x<width; x++)
 		{
-			int16 g = round(oc1*grain_buf[y][x+i] + oc2*over_buf[y][x+i], 5);
-			grain_buf[y][x+i] = max(-127, min(+127, g));
-			over_buf[y][x+i] = grain_buf[y+16][x+i];
+			int16 g = round(oc1*grain_buf[y][x] + oc2*over_buf[y][x], 5);
+			grain_buf[y][x] = max(-127, min(+127, g));
+			over_buf[y][x] = grain_buf[y+16][x];
 		}
 	}
 	//Horizontal deblocking
