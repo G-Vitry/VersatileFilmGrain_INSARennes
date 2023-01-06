@@ -672,6 +672,98 @@ void vfgs_add_grain_stripe_420_10bits(void* Y, void* U, void* V, unsigned y, uns
 	{
 		uint8 oc1 = y ? 24 : 12; // current
 		uint8 oc2 = y ? 12 : 24; // previous
+		
+		//
+		// Plus long que la boucle simple peut importe la version + ne fonctionne pas.
+		//
+		/*
+		for(x = 0; x < width; x += 16)
+		{
+			__m256i _coeff, _grain_over, _mul1, _mul2, _sum;
+			__m256i _g_inter;
+			__m256i _const_min, _const_max;
+			__m128i _g_final;
+			__m256i _oc1, _oc2, _over_buf, _grain_buf;
+
+			_oc1 = _mm256_set1_epi16(oc1);
+			_oc2 = _mm256_set1_epi16(oc2);
+			_grain_buf = _mm256_cvtepi8_epi16(_mm_load_si128((__m128i*) &grain_buf[y][x]));// Load 16 element of 8 bits, then convert them into 16 elements of 16 bits
+			_over_buf = _mm256_cvtepi8_epi16(_mm_load_si128((__m128i*) &over_buf[y][x]));// Load 16 element of 8 bits, then convert them into 16 elements of 16 bits
+			
+			_mul1 = _mm256_mullo_epi16(_grain_buf, _oc1);
+			_mul2 = _mm256_mullo_epi16(_over_buf, _oc2);
+			_sum = _mm256_add_epi16(_mul1, _mul2);
+			_g_inter = _mm256_set_epi16(round(_mm256_extract_epi16(_sum, 15), 5),
+										round(_mm256_extract_epi16(_sum, 14), 5),
+										round(_mm256_extract_epi16(_sum, 13), 5),
+										round(_mm256_extract_epi16(_sum, 12), 5),
+										round(_mm256_extract_epi16(_sum, 11), 5),
+										round(_mm256_extract_epi16(_sum, 10), 5),
+										round(_mm256_extract_epi16(_sum, 9), 5),
+										round(_mm256_extract_epi16(_sum, 8), 5),
+										round(_mm256_extract_epi16(_sum, 7), 5),
+										round(_mm256_extract_epi16(_sum, 6), 5),
+										round(_mm256_extract_epi16(_sum, 5), 5),
+										round(_mm256_extract_epi16(_sum, 4), 5),
+										round(_mm256_extract_epi16(_sum, 3), 5),
+										round(_mm256_extract_epi16(_sum, 2), 5),
+										round(_mm256_extract_epi16(_sum, 1), 5),
+										round(_mm256_extract_epi16(_sum, 0), 5));
+			/*_coeff = _mm256_set_epi8(oc1, oc2, oc1, oc2, oc1, oc2, oc1, oc2,
+									 oc1, oc2, oc1, oc2, oc1, oc2, oc1, oc2,
+									 oc1, oc2, oc1, oc2, oc1, oc2, oc1, oc2,
+									 oc1, oc2, oc1, oc2, oc1, oc2, oc1, oc2);
+			_grain_over = _mm256_set_epi8(grain_buf[y][x + 15], over_buf[y][x + 15], grain_buf[y][x + 14], over_buf[y][x + 14],
+										  grain_buf[y][x + 13], over_buf[y][x + 13], grain_buf[y][x + 12], over_buf[y][x + 12],
+										  grain_buf[y][x + 11], over_buf[y][x + 11], grain_buf[y][x + 10], over_buf[y][x + 10],
+										  grain_buf[y][x + 9], over_buf[y][x + 9], grain_buf[y][x + 8], over_buf[y][x + 8],
+										  grain_buf[y][x + 7], over_buf[y][x + 7], grain_buf[y][x + 6], over_buf[y][x + 6],
+										  grain_buf[y][x + 5], over_buf[y][x + 5], grain_buf[y][x + 4], over_buf[y][x + 4],
+										  grain_buf[y][x + 3], over_buf[y][x + 3], grain_buf[y][x + 2], over_buf[y][x + 2],
+										  grain_buf[y][x + 1], over_buf[y][x + 1], grain_buf[y][x], over_buf[y][x]);
+
+			_g_inter = _mm256_maddubs_epi16(_coeff, _grain_over);
+			_g_inter = _mm256_set_epi16(round(_mm256_extract_epi16(_g_inter, 15), 5),
+								  round(_mm256_extract_epi16(_g_inter, 14), 5),
+								  round(_mm256_extract_epi16(_g_inter, 13), 5),
+								  round(_mm256_extract_epi16(_g_inter, 12), 5),
+								  round(_mm256_extract_epi16(_g_inter, 11), 5),
+								  round(_mm256_extract_epi16(_g_inter, 10), 5),
+								  round(_mm256_extract_epi16(_g_inter, 9), 5),
+								  round(_mm256_extract_epi16(_g_inter, 8), 5),
+								  round(_mm256_extract_epi16(_g_inter, 7), 5),
+								  round(_mm256_extract_epi16(_g_inter, 6), 5),
+								  round(_mm256_extract_epi16(_g_inter, 5), 5),
+								  round(_mm256_extract_epi16(_g_inter, 4), 5),
+								  round(_mm256_extract_epi16(_g_inter, 3), 5),
+								  round(_mm256_extract_epi16(_g_inter, 2), 5),
+								  round(_mm256_extract_epi16(_g_inter, 1), 5),
+								  round(_mm256_extract_epi16(_g_inter, 0), 5));*//*
+			_const_max = _mm256_set1_epi16(-127);
+			_const_min = _mm256_set1_epi16(127);
+			_g_inter = _mm256_min_epi16(_const_min, _g_inter);
+			_g_inter = _mm256_max_epi16(_const_max, _g_inter);
+			_g_final = _mm_set_epi8(_mm256_extract_epi8(_g_inter, 30),
+									_mm256_extract_epi8(_g_inter, 28),
+									_mm256_extract_epi8(_g_inter, 26),
+									_mm256_extract_epi8(_g_inter, 24),
+									_mm256_extract_epi8(_g_inter, 22),
+									_mm256_extract_epi8(_g_inter, 20),
+									_mm256_extract_epi8(_g_inter, 18),
+									_mm256_extract_epi8(_g_inter, 16),
+									_mm256_extract_epi8(_g_inter, 14),
+									_mm256_extract_epi8(_g_inter, 12),
+									_mm256_extract_epi8(_g_inter, 10),
+									_mm256_extract_epi8(_g_inter, 8),
+									_mm256_extract_epi8(_g_inter, 6),
+									_mm256_extract_epi8(_g_inter, 4),
+									_mm256_extract_epi8(_g_inter, 2),
+									_mm256_extract_epi8(_g_inter, 0));
+
+			_mm_store_si128((__m128i*)&over_buf[y][x], _g_final);
+			_mm_store_si128((__m128i*)&grain_buf[y][x], _g_final);
+		}*/
+		
 		for (x=0; x<width; x++)
 		{
 			int16 g = round(oc1*grain_buf[y][x] + oc2*over_buf[y][x], 5);
