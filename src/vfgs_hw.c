@@ -53,7 +53,7 @@
 #define V_index 2
 
 //Define some missing intrinsics
-
+// https://github.com/samyvilar/dyn_perf/blob/master/sse2.h
 #ifndef intrsc_attrs
 #ifdef __INTEL_COMPILER
 #   define intrsc_attrs __attribute__((__gnu_inline__, __always_inline__, __artificial__)) //, __artificial__
@@ -71,6 +71,9 @@ static_inline __m128i intrsc_attrs _mm_srl_epi8(__m128i a, __m128i b) { // 5-7 c
     return _mm_and_si128(_mm_srl_epi16(a, b), _mm_set1_epi8(0xFFU >> _mm_cvtsi128_si64(b)));
 }
 
+static_inline __m128i _mm_sll_epi8(__m128i a, __m128i b) { // (4-6 cycles)
+    return _mm_and_si128(_mm_sll_epi16(a, b), _mm_set1_epi8(0xFFU << _mm_cvtsi128_si64(b)));
+}
 
 static_inline __m128i _mm_mullo_epi8(__m128i a, __m128i b) {
     return
@@ -94,9 +97,12 @@ static_inline __m128i _mm_mullo_epi8(__m128i a, __m128i b) {
     ;
 }
 
-/* void (*ptr_add_grain_block_Y)(void* , int, int , int , int );
-void (*ptr_add_grain_block_U)(void* I, int, int , int , int );
-void (*ptr_add_grain_block_V)(void* I, int, int , int , int ); */
+//#define _round_simd(_a,_s) {_mm_srl_epi8(_mm_add_epi16(_a,_mm_sll_epi8(_mm_set1_epi8(1),(_mm_sub_epi16(_s,_mm_set1_epi8(1))))),_s)}
+
+static_inline __m128i _round_simd(__m128i a, __m128i b) { // (4-6 cycles)
+    return _mm_srl_epi8(_mm_add_epi16(a,_mm_sll_epi8(_mm_set1_epi8(1),(_mm_sub_epi16(b,_mm_set1_epi8(1))))),b);
+
+}
 
 void (*ptr_add_grain_stripe)(void* Y, void* U, void* V, unsigned y, unsigned width, unsigned height, unsigned stride, unsigned cstride);
 
@@ -668,101 +674,41 @@ void vfgs_add_grain_stripe_420_10bits(void* Y, void* U, void* V, unsigned y, uns
 
 	// Y: vertical overlap (merge lines over_buf with 0 & 1, then copy 16 & 17 to over_buf)
 	// problem: need to store 9-bits now ? or just clip ?
+
+	__m128i v_127 = _mm_set1_epi8(127);
+    __m128i v_neg_127 = _mm_set1_epi8(-127);
+	
+	for (y=0; y<2 && overlap; y++)
+	{
+		__m128i _oc1 = _mm_set1_epi8(y ? 24 : 12); // current
+    	__m128i _oc2 = _mm_set1_epi8(y ? 12 : 24); // previous
+
+		for (x=0; x<width; x+=16)
+		{
+			//perfom the round operation 
+			__m128i _grain_buf = _mm_load_si128((__m128i *)&grain_buf[y][x]);
+            __m128i _over_buf = _mm_load_si128((__m128i *)&over_buf[y][x]);
+
+			__m128i _g1 = _mm_mullo_epi16(_oc1, _grain_buf);
+			__m128i _g2 = _mm_mullo_epi16(_oc2, _over_buf);
+			__m128i _g = _mm_add_epi16(_g1, _g2);
+			
+			__m128i _g_round = _round_simd(_g, _mm_set1_epi8(5));
+
+			// perform the clamp operation
+            __m128i _g_clamp = _mm_min_epi8(_g_round, v_127);
+            _g_clamp = _mm_max_epi8(_g_clamp, v_neg_127);
+
+			// store the result
+            _mm_store_si128((__m128i *)&grain_buf[y][x], _g_clamp);
+            _mm_store_si128((__m128i *)&over_buf[y][x], _g_clamp);
+		}
+	}
+	/*	
 	for (y=0; y<2 && overlap; y++)
 	{
 		uint8 oc1 = y ? 24 : 12; // current
 		uint8 oc2 = y ? 12 : 24; // previous
-		
-		//
-		// Plus long que la boucle simple peut importe la version + ne fonctionne pas.
-		//
-		/*
-		for(x = 0; x < width; x += 16)
-		{
-			__m256i _coeff, _grain_over, _mul1, _mul2, _sum;
-			__m256i _g_inter;
-			__m256i _const_min, _const_max;
-			__m128i _g_final;
-			__m256i _oc1, _oc2, _over_buf, _grain_buf;
-
-			_oc1 = _mm256_set1_epi16(oc1);
-			_oc2 = _mm256_set1_epi16(oc2);
-			_grain_buf = _mm256_cvtepi8_epi16(_mm_load_si128((__m128i*) &grain_buf[y][x]));// Load 16 element of 8 bits, then convert them into 16 elements of 16 bits
-			_over_buf = _mm256_cvtepi8_epi16(_mm_load_si128((__m128i*) &over_buf[y][x]));// Load 16 element of 8 bits, then convert them into 16 elements of 16 bits
-			
-			_mul1 = _mm256_mullo_epi16(_grain_buf, _oc1);
-			_mul2 = _mm256_mullo_epi16(_over_buf, _oc2);
-			_sum = _mm256_add_epi16(_mul1, _mul2);
-			_g_inter = _mm256_set_epi16(round(_mm256_extract_epi16(_sum, 15), 5),
-										round(_mm256_extract_epi16(_sum, 14), 5),
-										round(_mm256_extract_epi16(_sum, 13), 5),
-										round(_mm256_extract_epi16(_sum, 12), 5),
-										round(_mm256_extract_epi16(_sum, 11), 5),
-										round(_mm256_extract_epi16(_sum, 10), 5),
-										round(_mm256_extract_epi16(_sum, 9), 5),
-										round(_mm256_extract_epi16(_sum, 8), 5),
-										round(_mm256_extract_epi16(_sum, 7), 5),
-										round(_mm256_extract_epi16(_sum, 6), 5),
-										round(_mm256_extract_epi16(_sum, 5), 5),
-										round(_mm256_extract_epi16(_sum, 4), 5),
-										round(_mm256_extract_epi16(_sum, 3), 5),
-										round(_mm256_extract_epi16(_sum, 2), 5),
-										round(_mm256_extract_epi16(_sum, 1), 5),
-										round(_mm256_extract_epi16(_sum, 0), 5));
-			/*_coeff = _mm256_set_epi8(oc1, oc2, oc1, oc2, oc1, oc2, oc1, oc2,
-									 oc1, oc2, oc1, oc2, oc1, oc2, oc1, oc2,
-									 oc1, oc2, oc1, oc2, oc1, oc2, oc1, oc2,
-									 oc1, oc2, oc1, oc2, oc1, oc2, oc1, oc2);
-			_grain_over = _mm256_set_epi8(grain_buf[y][x + 15], over_buf[y][x + 15], grain_buf[y][x + 14], over_buf[y][x + 14],
-										  grain_buf[y][x + 13], over_buf[y][x + 13], grain_buf[y][x + 12], over_buf[y][x + 12],
-										  grain_buf[y][x + 11], over_buf[y][x + 11], grain_buf[y][x + 10], over_buf[y][x + 10],
-										  grain_buf[y][x + 9], over_buf[y][x + 9], grain_buf[y][x + 8], over_buf[y][x + 8],
-										  grain_buf[y][x + 7], over_buf[y][x + 7], grain_buf[y][x + 6], over_buf[y][x + 6],
-										  grain_buf[y][x + 5], over_buf[y][x + 5], grain_buf[y][x + 4], over_buf[y][x + 4],
-										  grain_buf[y][x + 3], over_buf[y][x + 3], grain_buf[y][x + 2], over_buf[y][x + 2],
-										  grain_buf[y][x + 1], over_buf[y][x + 1], grain_buf[y][x], over_buf[y][x]);
-
-			_g_inter = _mm256_maddubs_epi16(_coeff, _grain_over);
-			_g_inter = _mm256_set_epi16(round(_mm256_extract_epi16(_g_inter, 15), 5),
-								  round(_mm256_extract_epi16(_g_inter, 14), 5),
-								  round(_mm256_extract_epi16(_g_inter, 13), 5),
-								  round(_mm256_extract_epi16(_g_inter, 12), 5),
-								  round(_mm256_extract_epi16(_g_inter, 11), 5),
-								  round(_mm256_extract_epi16(_g_inter, 10), 5),
-								  round(_mm256_extract_epi16(_g_inter, 9), 5),
-								  round(_mm256_extract_epi16(_g_inter, 8), 5),
-								  round(_mm256_extract_epi16(_g_inter, 7), 5),
-								  round(_mm256_extract_epi16(_g_inter, 6), 5),
-								  round(_mm256_extract_epi16(_g_inter, 5), 5),
-								  round(_mm256_extract_epi16(_g_inter, 4), 5),
-								  round(_mm256_extract_epi16(_g_inter, 3), 5),
-								  round(_mm256_extract_epi16(_g_inter, 2), 5),
-								  round(_mm256_extract_epi16(_g_inter, 1), 5),
-								  round(_mm256_extract_epi16(_g_inter, 0), 5));*//*
-			_const_max = _mm256_set1_epi16(-127);
-			_const_min = _mm256_set1_epi16(127);
-			_g_inter = _mm256_min_epi16(_const_min, _g_inter);
-			_g_inter = _mm256_max_epi16(_const_max, _g_inter);
-			_g_final = _mm_set_epi8(_mm256_extract_epi8(_g_inter, 30),
-									_mm256_extract_epi8(_g_inter, 28),
-									_mm256_extract_epi8(_g_inter, 26),
-									_mm256_extract_epi8(_g_inter, 24),
-									_mm256_extract_epi8(_g_inter, 22),
-									_mm256_extract_epi8(_g_inter, 20),
-									_mm256_extract_epi8(_g_inter, 18),
-									_mm256_extract_epi8(_g_inter, 16),
-									_mm256_extract_epi8(_g_inter, 14),
-									_mm256_extract_epi8(_g_inter, 12),
-									_mm256_extract_epi8(_g_inter, 10),
-									_mm256_extract_epi8(_g_inter, 8),
-									_mm256_extract_epi8(_g_inter, 6),
-									_mm256_extract_epi8(_g_inter, 4),
-									_mm256_extract_epi8(_g_inter, 2),
-									_mm256_extract_epi8(_g_inter, 0));
-
-			_mm_store_si128((__m128i*)&over_buf[y][x], _g_final);
-			_mm_store_si128((__m128i*)&grain_buf[y][x], _g_final);
-		}*/
 		
 		for (x=0; x<width; x++)
 		{
@@ -770,7 +716,7 @@ void vfgs_add_grain_stripe_420_10bits(void* Y, void* U, void* V, unsigned y, uns
 			grain_buf[y][x] = max(-127, min(+127, g));
 			over_buf[y][x] = grain_buf[y][x];
 		}
-	}
+	}*/
 
 	// Y: horizontal deblock
 	// problem: need to store 9-bits now ? or just clip ?
