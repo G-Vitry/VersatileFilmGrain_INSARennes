@@ -96,13 +96,19 @@ static_inline __m128i _mm_mullo_epi8(__m128i a, __m128i b) {
 #       endif
     ;
 }
-
-//#define _round_simd(_a,_s) {_mm_srl_epi8(_mm_add_epi16(_a,_mm_sll_epi8(_mm_set1_epi8(1),(_mm_sub_epi16(_s,_mm_set1_epi8(1))))),_s)}
+static_inline __m256i _mm256_llshft_epi16(__m256i a, __m256i b) {return _mm256_sll_epi16(a, _mm256_castsi256_si128(b));}
+static_inline __m256i _mm256_lrsft_epi16(__m256i a, __m256i b) {return _mm256_srl_epi16(a, _mm256_castsi256_si128(b));}
 
 static_inline __m128i _round_simd(__m128i a, __m128i b) { // (4-6 cycles)
     return _mm_srl_epi8(_mm_add_epi16(a,_mm_sll_epi8(_mm_set1_epi8(1),(_mm_sub_epi16(b,_mm_set1_epi8(1))))),b);
 
 }
+
+static_inline __m256i _m256_round_simd(__m256i a, __m256i b) { // (4-6 cycles)
+    return _mm256_lrsft_epi16(_mm256_add_epi32(a,_mm256_llshft_epi16(_mm256_set1_epi16(1),(_mm256_sub_epi32(b,_mm256_set1_epi16(1))))),b);
+
+}
+
 
 void (*ptr_add_grain_stripe)(void* Y, void* U, void* V, unsigned y, unsigned width, unsigned height, unsigned stride, unsigned cstride);
 
@@ -689,8 +695,8 @@ void vfgs_add_grain_stripe_420_10bits(void* Y, void* U, void* V, unsigned y, uns
 			__m128i _grain_buf = _mm_load_si128((__m128i *)&grain_buf[y][x]);
             __m128i _over_buf = _mm_load_si128((__m128i *)&over_buf[y][x]);
 
-			__m128i _g1 = _mm_mullo_epi16(_oc1, _grain_buf);
-			__m128i _g2 = _mm_mullo_epi16(_oc2, _over_buf);
+			__m128i _g1 = _mm_mullo_epi8(_oc1, _grain_buf);
+			__m128i _g2 = _mm_mullo_epi8(_oc2, _over_buf);
 			__m128i _g = _mm_add_epi16(_g1, _g2);
 			
 			__m128i _g_round = _round_simd(_g, _mm_set1_epi8(5));
@@ -738,6 +744,40 @@ void vfgs_add_grain_stripe_420_10bits(void* Y, void* U, void* V, unsigned y, uns
 	// Y: scale & merge
 	height = min(16, height);
 	I16 = (uint16*)Y;
+
+	__m256i _Y_max = _mm256_set1_epi16(Y_max);
+	__m256i _Y_min = _mm256_set1_epi16(Y_min);
+	__m256i _scale_shift = _mm256_set1_epi16((short)scale_shift);
+
+	for(y=0; y<height; y++)
+	{
+		__m256i _I16 = _mm256_load_si256((__m256i*)&I16);
+		for(x=0; x<width; x+=16)
+		{
+			__m128i _grain_buf = _mm_load_si128((__m128i *)&grain_buf[y][x]);
+    		__m128i _scale_buf = _mm_load_si128((__m128i *)&scale_buf[y][x]);
+
+			//convert into 16bits values 
+			__m256i _grain_buf_16 = _mm256_cvtepi8_epi16(_grain_buf);
+			__m256i _scale_buf_16 = _mm256_cvtepi8_epi16(_scale_buf);
+
+			//perform the round operation
+			__m256i _mul = _mm256_mullo_epi16 (_scale_buf_16, _grain_buf_16);
+			__m256i _g = _m256_round_simd(_mul, _scale_shift);
+
+			// perform the clamp operation
+			__m256i _addig = _mm256_add_epi16(_I16, _g);
+			__m256i _Ymax2 = _mm256_slli_epi16(_Y_max, 2);
+			__m256i _Ymin2 = _mm256_slli_epi16(_Y_min, 2);
+			__m256i i_clampmin = _mm256_min_epi16(_addig, _Ymax2);
+			_I16 = _mm256_max_epi16(_Ymin2, i_clampmin);
+
+			// Store
+			 _mm256_storeu_ps((float*)&I16[x], (__m256)_I16);
+		}
+		I16 += stride;
+	}
+	/*
 	for (y=0; y<height; y++)
 	{
 		for (x=0; x<width; x++)
@@ -747,7 +787,7 @@ void vfgs_add_grain_stripe_420_10bits(void* Y, void* U, void* V, unsigned y, uns
 			
 		}
 		I16 += stride;
-	}
+	}*/
 
 	// U
 	height_u = min(18, (height_u-y_base));
