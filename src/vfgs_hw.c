@@ -751,7 +751,7 @@ void vfgs_add_grain_stripe_420_10bits(void* Y, void* U, void* V, unsigned y, uns
 
 	for(y=0; y<height; y++)
 	{
-		__m256i _I16 = _mm256_load_si256((__m256i*)&I16);
+        __m256i _I16 = _mm256_loadu_si256((__m256i*)&I16);
 		for(x=0; x<width; x+=16)
 		{
 			__m128i _grain_buf = _mm_load_si128((__m128i *)&grain_buf[y][x]);
