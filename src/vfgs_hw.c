@@ -96,17 +96,24 @@ static_inline __m128i _mm_mullo_epi8(__m128i a, __m128i b) {
 #       endif
     ;
 }
-static_inline __m256i _mm256_llshft_epi16(__m256i a, __m256i b) {return _mm256_sll_epi16(a, _mm256_castsi256_si128(b));}
-static_inline __m256i _mm256_lrsft_epi16(__m256i a, __m256i b) {return _mm256_srl_epi16(a, _mm256_castsi256_si128(b));}
+static_inline __m256i _mm256_llshft_epi16(__m256i a, __m256i b) {
+    __m256i _shift = _mm256_sll_epi16(a, _mm256_castsi256_si128(b));
+    return _shift;
+}
+static_inline __m256i _mm256_lrshft_epi16(__m256i a, __m256i b) {return _mm256_srl_epi16(a, _mm256_castsi256_si128(b));}
 
 static_inline __m128i _round_simd(__m128i a, __m128i b) { // (4-6 cycles)
     return _mm_srl_epi8(_mm_add_epi16(a,_mm_sll_epi8(_mm_set1_epi8(1),(_mm_sub_epi16(b,_mm_set1_epi8(1))))),b);
 
 }
 
-static_inline __m256i _m256_round_simd(__m256i a, __m256i b) { // (4-6 cycles)
-    return _mm256_lrsft_epi16(_mm256_add_epi32(a,_mm256_llshft_epi16(_mm256_set1_epi16(1),(_mm256_sub_epi32(b,_mm256_set1_epi16(1))))),b);
+__m256i _mm256_round_simd(__m256i a, __m256i b) { // (4-6 cycles)
 
+    __m256i var_1 = _mm256_set1_epi16(1);
+    __m256i b_1 = (_mm256_sub_epi32(b,var_1));
+    __m256i l_1_shift = _mm256_llshft_epi16(var_1, b_1);
+    __m256i add_inter = _mm256_add_epi32(a, l_1_shift);
+    return _mm256_lrshft_epi16(add_inter, b);
 }
 
 
@@ -545,8 +552,10 @@ void vfgs_add_grain_stripe_420_10bits(void* Y, void* U, void* V, unsigned y, uns
 	unsigned height_u = height;
 	unsigned height_v = height;
 
-	__m128i _intensity, _pi, _P, _piLUT_inter, _shift_4, _s, _shift_2;
+	__m128i _intensity, _pi, _P, _piLUT_inter, _shift_4, _s, _shift_2, _scale_buf;
 	__m256i _intensity_inter;
+	__m128i v_127 = _mm_set1_epi8(127);
+    __m128i v_neg_127 = _mm_set1_epi8(-127);
 
 	_shift_4 = _mm_set_epi8(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4);
 	_shift_2 = _mm_set_epi8(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,2);
@@ -581,109 +590,240 @@ void vfgs_add_grain_stripe_420_10bits(void* Y, void* U, void* V, unsigned y, uns
 	I16 = (uint16*)Y;
 	for (y=0; y<height; y++)
 	{
-		for (x=0; x<width; x+=16)
+		__m128i _oc1 = _mm_set1_epi8(y ? 24 : 12); // current
+    	__m128i _oc2 = _mm_set1_epi8(y ? 12 : 24); // previous
+		if(y < 2 && overlap)
 		{
-			int    s = sign[Y_index][x/16];
-			uint8 ox = offset_x[Y_index][x/16];
-			uint8 oy = offset_y[Y_index][x/16];
-
-            _s = _mm_set1_epi8(sign[0][x/16]);
-
-            _intensity_inter = _mm256_loadu_si256((__m256i*)&I16[x]);
-			_intensity_inter = (__m256i)_mm256_srl_epi16(_intensity_inter, _shift_2);
-
-			// We need to retrieve the LSB of each 16 bits integer
-			_intensity = _mm_set_epi8(_mm256_extract_epi8(_intensity_inter, 30),
-									  _mm256_extract_epi8(_intensity_inter, 28),
-									  _mm256_extract_epi8(_intensity_inter, 26),
-									  _mm256_extract_epi8(_intensity_inter, 24),
-									  _mm256_extract_epi8(_intensity_inter, 22),
-									  _mm256_extract_epi8(_intensity_inter, 20),
-									  _mm256_extract_epi8(_intensity_inter, 18),
-									  _mm256_extract_epi8(_intensity_inter, 16),
-									  _mm256_extract_epi8(_intensity_inter, 14),
-									  _mm256_extract_epi8(_intensity_inter, 12),
-									  _mm256_extract_epi8(_intensity_inter, 10),
-									  _mm256_extract_epi8(_intensity_inter, 8),
-									  _mm256_extract_epi8(_intensity_inter, 6),
-									  _mm256_extract_epi8(_intensity_inter, 4),
-									  _mm256_extract_epi8(_intensity_inter, 2),
-									  _mm256_extract_epi8(_intensity_inter, 0));
-
-			_piLUT_inter = _mm_set_epi8(pLUT[0][_mm_extract_epi8(_intensity, 15)],
-										pLUT[0][_mm_extract_epi8(_intensity, 14)],
-										pLUT[0][_mm_extract_epi8(_intensity, 13)],
-										pLUT[0][_mm_extract_epi8(_intensity, 12)],
-										pLUT[0][_mm_extract_epi8(_intensity, 11)],
-										pLUT[0][_mm_extract_epi8(_intensity, 10)],
-										pLUT[0][_mm_extract_epi8(_intensity, 9)],
-										pLUT[0][_mm_extract_epi8(_intensity, 8)],
-										pLUT[0][_mm_extract_epi8(_intensity, 7)],
-										pLUT[0][_mm_extract_epi8(_intensity, 6)],
-										pLUT[0][_mm_extract_epi8(_intensity, 5)],
-										pLUT[0][_mm_extract_epi8(_intensity, 4)],
-										pLUT[0][_mm_extract_epi8(_intensity, 3)],
-										pLUT[0][_mm_extract_epi8(_intensity, 2)],
-										pLUT[0][_mm_extract_epi8(_intensity, 1)],
-										pLUT[0][_mm_extract_epi8(_intensity, 0)]);
-
-
-            _pi = (__m128i)_mm_srl_epi8(_piLUT_inter, _shift_4);
-			_P = _mm_set_epi8(pattern[0][_mm_extract_epi8(_pi, 15)][oy + y][ox + 15],
-							  pattern[0][_mm_extract_epi8(_pi, 14)][oy + y][ox + 14],
-							  pattern[0][_mm_extract_epi8(_pi, 13)][oy + y][ox + 13],
-							  pattern[0][_mm_extract_epi8(_pi, 12)][oy + y][ox + 12],
-							  pattern[0][_mm_extract_epi8(_pi, 11)][oy + y][ox + 11],
-							  pattern[0][_mm_extract_epi8(_pi, 10)][oy + y][ox + 10],
-							  pattern[0][_mm_extract_epi8(_pi, 9)][oy + y][ox + 9],
-							  pattern[0][_mm_extract_epi8(_pi, 8)][oy + y][ox + 8],
-							  pattern[0][_mm_extract_epi8(_pi, 7)][oy + y][ox + 7],
-							  pattern[0][_mm_extract_epi8(_pi, 6)][oy + y][ox + 6],
-							  pattern[0][_mm_extract_epi8(_pi, 5)][oy + y][ox + 5],
-							  pattern[0][_mm_extract_epi8(_pi, 4)][oy + y][ox + 4],
-							  pattern[0][_mm_extract_epi8(_pi, 3)][oy + y][ox + 3],
-							  pattern[0][_mm_extract_epi8(_pi, 2)][oy + y][ox + 2],
-							  pattern[0][_mm_extract_epi8(_pi, 1)][oy + y][ox + 1],
-							  pattern[0][_mm_extract_epi8(_pi, 0)][oy + y][ox + 0]);
-            _P = _mm_mullo_epi8(_P, _s);
-
-            _mm_store_si128((__m128i*)&grain_buf[y][x], _P);
-			scale_buf[y][x] = sLUT[0][_mm_extract_epi8(_intensity, 0)];
-			scale_buf[y][x+1] = sLUT[0][_mm_extract_epi8(_intensity, 1)];
-			scale_buf[y][x+2] = sLUT[0][_mm_extract_epi8(_intensity, 2)];
-			scale_buf[y][x+3] = sLUT[0][_mm_extract_epi8(_intensity, 3)];
-			scale_buf[y][x+4] = sLUT[0][_mm_extract_epi8(_intensity, 4)];
-			scale_buf[y][x+5] = sLUT[0][_mm_extract_epi8(_intensity, 5)];
-			scale_buf[y][x+6] = sLUT[0][_mm_extract_epi8(_intensity, 6)];
-			scale_buf[y][x+7] = sLUT[0][_mm_extract_epi8(_intensity, 7)];
-			scale_buf[y][x+8] = sLUT[0][_mm_extract_epi8(_intensity, 8)];
-			scale_buf[y][x+9] = sLUT[0][_mm_extract_epi8(_intensity, 9)];
-			scale_buf[y][x+10] = sLUT[0][_mm_extract_epi8(_intensity, 10)];
-			scale_buf[y][x+11] = sLUT[0][_mm_extract_epi8(_intensity, 11)];
-			scale_buf[y][x+12] = sLUT[0][_mm_extract_epi8(_intensity, 12)];
-			scale_buf[y][x+13] = sLUT[0][_mm_extract_epi8(_intensity, 13)];
-			scale_buf[y][x+14] = sLUT[0][_mm_extract_epi8(_intensity, 14)];
-			scale_buf[y][x+15] = sLUT[0][_mm_extract_epi8(_intensity, 15)];
-			/*
-			for (i=0; i<16; i++) // may overflow past right image border but no problem: allocated space is multiple of 16
+			for (x=0; x<width; x+=16)
 			{
-				uint8 intensity = I16[x+i] >> 2;
-				uint8 pi = pLUT[Y_index][intensity] >> 4; // pattern index (integer part) / TODO: try also with zero-shift
-				// TODO: assert(pi < VFGS_MAX_PATTERNS); // out of loop ?
-				uint8 P  = pattern[0][pi][oy + y][ox + i] * s; // We could consider just XORing the sign bit
-				grain_buf[y][x+i] = P;
-				scale_buf[y][x+i] = sLUT[Y_index][intensity];
-			}*/
+				int    s = sign[Y_index][x/16];
+				uint8 ox = offset_x[Y_index][x/16];
+				uint8 oy = offset_y[Y_index][x/16];
+
+				_s = _mm_set1_epi8(sign[0][x/16]);
+
+				_intensity_inter = _mm256_loadu_si256((__m256i*)&I16[x]);
+				_intensity_inter = (__m256i)_mm256_srl_epi16(_intensity_inter, _shift_2);
+
+				// We need to retrieve the LSB of each 16 bits integer
+				_intensity = _mm_set_epi8(_mm256_extract_epi8(_intensity_inter, 30),
+										_mm256_extract_epi8(_intensity_inter, 28),
+										_mm256_extract_epi8(_intensity_inter, 26),
+										_mm256_extract_epi8(_intensity_inter, 24),
+										_mm256_extract_epi8(_intensity_inter, 22),
+										_mm256_extract_epi8(_intensity_inter, 20),
+										_mm256_extract_epi8(_intensity_inter, 18),
+										_mm256_extract_epi8(_intensity_inter, 16),
+										_mm256_extract_epi8(_intensity_inter, 14),
+										_mm256_extract_epi8(_intensity_inter, 12),
+										_mm256_extract_epi8(_intensity_inter, 10),
+										_mm256_extract_epi8(_intensity_inter, 8),
+										_mm256_extract_epi8(_intensity_inter, 6),
+										_mm256_extract_epi8(_intensity_inter, 4),
+										_mm256_extract_epi8(_intensity_inter, 2),
+										_mm256_extract_epi8(_intensity_inter, 0));
+
+				_piLUT_inter = _mm_set_epi8(pLUT[0][_mm_extract_epi8(_intensity, 15)],
+											pLUT[0][_mm_extract_epi8(_intensity, 14)],
+											pLUT[0][_mm_extract_epi8(_intensity, 13)],
+											pLUT[0][_mm_extract_epi8(_intensity, 12)],
+											pLUT[0][_mm_extract_epi8(_intensity, 11)],
+											pLUT[0][_mm_extract_epi8(_intensity, 10)],
+											pLUT[0][_mm_extract_epi8(_intensity, 9)],
+											pLUT[0][_mm_extract_epi8(_intensity, 8)],
+											pLUT[0][_mm_extract_epi8(_intensity, 7)],
+											pLUT[0][_mm_extract_epi8(_intensity, 6)],
+											pLUT[0][_mm_extract_epi8(_intensity, 5)],
+											pLUT[0][_mm_extract_epi8(_intensity, 4)],
+											pLUT[0][_mm_extract_epi8(_intensity, 3)],
+											pLUT[0][_mm_extract_epi8(_intensity, 2)],
+											pLUT[0][_mm_extract_epi8(_intensity, 1)],
+											pLUT[0][_mm_extract_epi8(_intensity, 0)]);
+
+
+				_pi = (__m128i)_mm_srl_epi8(_piLUT_inter, _shift_4);
+				_P = _mm_set_epi8(pattern[0][_mm_extract_epi8(_pi, 15)][oy + y][ox + 15],
+								pattern[0][_mm_extract_epi8(_pi, 14)][oy + y][ox + 14],
+								pattern[0][_mm_extract_epi8(_pi, 13)][oy + y][ox + 13],
+								pattern[0][_mm_extract_epi8(_pi, 12)][oy + y][ox + 12],
+								pattern[0][_mm_extract_epi8(_pi, 11)][oy + y][ox + 11],
+								pattern[0][_mm_extract_epi8(_pi, 10)][oy + y][ox + 10],
+								pattern[0][_mm_extract_epi8(_pi, 9)][oy + y][ox + 9],
+								pattern[0][_mm_extract_epi8(_pi, 8)][oy + y][ox + 8],
+								pattern[0][_mm_extract_epi8(_pi, 7)][oy + y][ox + 7],
+								pattern[0][_mm_extract_epi8(_pi, 6)][oy + y][ox + 6],
+								pattern[0][_mm_extract_epi8(_pi, 5)][oy + y][ox + 5],
+								pattern[0][_mm_extract_epi8(_pi, 4)][oy + y][ox + 4],
+								pattern[0][_mm_extract_epi8(_pi, 3)][oy + y][ox + 3],
+								pattern[0][_mm_extract_epi8(_pi, 2)][oy + y][ox + 2],
+								pattern[0][_mm_extract_epi8(_pi, 1)][oy + y][ox + 1],
+								pattern[0][_mm_extract_epi8(_pi, 0)][oy + y][ox + 0]);
+				_P = _mm_mullo_epi8(_P, _s);
+
+				_mm_store_si128((__m128i*)&grain_buf[y][x], _P);
+				
+				scale_buf[y][x] = sLUT[0][_mm_extract_epi8(_intensity, 0)];
+				scale_buf[y][x+1] = sLUT[0][_mm_extract_epi8(_intensity, 1)];
+				scale_buf[y][x+2] = sLUT[0][_mm_extract_epi8(_intensity, 2)];
+				scale_buf[y][x+3] = sLUT[0][_mm_extract_epi8(_intensity, 3)];
+				scale_buf[y][x+4] = sLUT[0][_mm_extract_epi8(_intensity, 4)];
+				scale_buf[y][x+5] = sLUT[0][_mm_extract_epi8(_intensity, 5)];
+				scale_buf[y][x+6] = sLUT[0][_mm_extract_epi8(_intensity, 6)];
+				scale_buf[y][x+7] = sLUT[0][_mm_extract_epi8(_intensity, 7)];
+				scale_buf[y][x+8] = sLUT[0][_mm_extract_epi8(_intensity, 8)];
+				scale_buf[y][x+9] = sLUT[0][_mm_extract_epi8(_intensity, 9)];
+				scale_buf[y][x+10] = sLUT[0][_mm_extract_epi8(_intensity, 10)];
+				scale_buf[y][x+11] = sLUT[0][_mm_extract_epi8(_intensity, 11)];
+				scale_buf[y][x+12] = sLUT[0][_mm_extract_epi8(_intensity, 12)];
+				scale_buf[y][x+13] = sLUT[0][_mm_extract_epi8(_intensity, 13)];
+				scale_buf[y][x+14] = sLUT[0][_mm_extract_epi8(_intensity, 14)];
+				scale_buf[y][x+15] = sLUT[0][_mm_extract_epi8(_intensity, 15)];
+				/*_scale_buf = _mm_set_epi8(sLUT[0][_mm_extract_epi8(_intensity, 15)],
+										sLUT[0][_mm_extract_epi8(_intensity, 14)],
+										sLUT[0][_mm_extract_epi8(_intensity, 13)],
+										sLUT[0][_mm_extract_epi8(_intensity, 12)],
+										sLUT[0][_mm_extract_epi8(_intensity, 11)],
+										sLUT[0][_mm_extract_epi8(_intensity, 10)],
+										sLUT[0][_mm_extract_epi8(_intensity, 9)],
+										sLUT[0][_mm_extract_epi8(_intensity, 8)],
+										sLUT[0][_mm_extract_epi8(_intensity, 7)],
+										sLUT[0][_mm_extract_epi8(_intensity, 6)],
+										sLUT[0][_mm_extract_epi8(_intensity, 5)],
+										sLUT[0][_mm_extract_epi8(_intensity, 4)],
+										sLUT[0][_mm_extract_epi8(_intensity, 3)],
+										sLUT[0][_mm_extract_epi8(_intensity, 2)],
+										sLUT[0][_mm_extract_epi8(_intensity, 1)],
+										sLUT[0][_mm_extract_epi8(_intensity, 0)]);*/
+
+				__m128i _over_buf = _mm_load_si128((__m128i *)&over_buf[y][x]);
+
+				__m128i _g1 = _mm_mullo_epi8(_oc1, _P);
+				__m128i _g2 = _mm_mullo_epi8(_oc2, _over_buf);
+				__m128i _g = _mm_add_epi16(_g1, _g2);
+				
+				__m128i _g_round = _round_simd(_g, _mm_set1_epi8(5));
+
+				// perform the clamp operation
+				__m128i _g_clamp = _mm_min_epi8(_g_round, v_127);
+				_g_clamp = _mm_max_epi8(_g_clamp, v_neg_127);
+
+				_mm_store_si128((__m128i *)&grain_buf[y][x], _g_clamp);
+				_mm_store_si128((__m128i *)&over_buf[y][x], _g_clamp);
+				
+			}
 		}
+		else
+		{
+			for (x=0; x<width; x+=16)
+			{
+				int    s = sign[Y_index][x/16];
+				uint8 ox = offset_x[Y_index][x/16];
+				uint8 oy = offset_y[Y_index][x/16];
+
+				_s = _mm_set1_epi8(sign[0][x/16]);
+
+				_intensity_inter = _mm256_loadu_si256((__m256i*)&I16[x]);
+				_intensity_inter = (__m256i)_mm256_srl_epi16(_intensity_inter, _shift_2);
+
+				// We need to retrieve the LSB of each 16 bits integer
+				_intensity = _mm_set_epi8(_mm256_extract_epi8(_intensity_inter, 30),
+										_mm256_extract_epi8(_intensity_inter, 28),
+										_mm256_extract_epi8(_intensity_inter, 26),
+										_mm256_extract_epi8(_intensity_inter, 24),
+										_mm256_extract_epi8(_intensity_inter, 22),
+										_mm256_extract_epi8(_intensity_inter, 20),
+										_mm256_extract_epi8(_intensity_inter, 18),
+										_mm256_extract_epi8(_intensity_inter, 16),
+										_mm256_extract_epi8(_intensity_inter, 14),
+										_mm256_extract_epi8(_intensity_inter, 12),
+										_mm256_extract_epi8(_intensity_inter, 10),
+										_mm256_extract_epi8(_intensity_inter, 8),
+										_mm256_extract_epi8(_intensity_inter, 6),
+										_mm256_extract_epi8(_intensity_inter, 4),
+										_mm256_extract_epi8(_intensity_inter, 2),
+										_mm256_extract_epi8(_intensity_inter, 0));
+
+				_piLUT_inter = _mm_set_epi8(pLUT[0][_mm_extract_epi8(_intensity, 15)],
+											pLUT[0][_mm_extract_epi8(_intensity, 14)],
+											pLUT[0][_mm_extract_epi8(_intensity, 13)],
+											pLUT[0][_mm_extract_epi8(_intensity, 12)],
+											pLUT[0][_mm_extract_epi8(_intensity, 11)],
+											pLUT[0][_mm_extract_epi8(_intensity, 10)],
+											pLUT[0][_mm_extract_epi8(_intensity, 9)],
+											pLUT[0][_mm_extract_epi8(_intensity, 8)],
+											pLUT[0][_mm_extract_epi8(_intensity, 7)],
+											pLUT[0][_mm_extract_epi8(_intensity, 6)],
+											pLUT[0][_mm_extract_epi8(_intensity, 5)],
+											pLUT[0][_mm_extract_epi8(_intensity, 4)],
+											pLUT[0][_mm_extract_epi8(_intensity, 3)],
+											pLUT[0][_mm_extract_epi8(_intensity, 2)],
+											pLUT[0][_mm_extract_epi8(_intensity, 1)],
+											pLUT[0][_mm_extract_epi8(_intensity, 0)]);
+
+
+				_pi = (__m128i)_mm_srl_epi8(_piLUT_inter, _shift_4);
+				_P = _mm_set_epi8(pattern[0][_mm_extract_epi8(_pi, 15)][oy + y][ox + 15],
+								pattern[0][_mm_extract_epi8(_pi, 14)][oy + y][ox + 14],
+								pattern[0][_mm_extract_epi8(_pi, 13)][oy + y][ox + 13],
+								pattern[0][_mm_extract_epi8(_pi, 12)][oy + y][ox + 12],
+								pattern[0][_mm_extract_epi8(_pi, 11)][oy + y][ox + 11],
+								pattern[0][_mm_extract_epi8(_pi, 10)][oy + y][ox + 10],
+								pattern[0][_mm_extract_epi8(_pi, 9)][oy + y][ox + 9],
+								pattern[0][_mm_extract_epi8(_pi, 8)][oy + y][ox + 8],
+								pattern[0][_mm_extract_epi8(_pi, 7)][oy + y][ox + 7],
+								pattern[0][_mm_extract_epi8(_pi, 6)][oy + y][ox + 6],
+								pattern[0][_mm_extract_epi8(_pi, 5)][oy + y][ox + 5],
+								pattern[0][_mm_extract_epi8(_pi, 4)][oy + y][ox + 4],
+								pattern[0][_mm_extract_epi8(_pi, 3)][oy + y][ox + 3],
+								pattern[0][_mm_extract_epi8(_pi, 2)][oy + y][ox + 2],
+								pattern[0][_mm_extract_epi8(_pi, 1)][oy + y][ox + 1],
+								pattern[0][_mm_extract_epi8(_pi, 0)][oy + y][ox + 0]);
+				_P = _mm_mullo_epi8(_P, _s);
+
+				_mm_store_si128((__m128i*)&grain_buf[y][x], _P);
+				
+				scale_buf[y][x] = sLUT[0][_mm_extract_epi8(_intensity, 0)];
+				scale_buf[y][x+1] = sLUT[0][_mm_extract_epi8(_intensity, 1)];
+				scale_buf[y][x+2] = sLUT[0][_mm_extract_epi8(_intensity, 2)];
+				scale_buf[y][x+3] = sLUT[0][_mm_extract_epi8(_intensity, 3)];
+				scale_buf[y][x+4] = sLUT[0][_mm_extract_epi8(_intensity, 4)];
+				scale_buf[y][x+5] = sLUT[0][_mm_extract_epi8(_intensity, 5)];
+				scale_buf[y][x+6] = sLUT[0][_mm_extract_epi8(_intensity, 6)];
+				scale_buf[y][x+7] = sLUT[0][_mm_extract_epi8(_intensity, 7)];
+				scale_buf[y][x+8] = sLUT[0][_mm_extract_epi8(_intensity, 8)];
+				scale_buf[y][x+9] = sLUT[0][_mm_extract_epi8(_intensity, 9)];
+				scale_buf[y][x+10] = sLUT[0][_mm_extract_epi8(_intensity, 10)];
+				scale_buf[y][x+11] = sLUT[0][_mm_extract_epi8(_intensity, 11)];
+				scale_buf[y][x+12] = sLUT[0][_mm_extract_epi8(_intensity, 12)];
+				scale_buf[y][x+13] = sLUT[0][_mm_extract_epi8(_intensity, 13)];
+				scale_buf[y][x+14] = sLUT[0][_mm_extract_epi8(_intensity, 14)];
+				scale_buf[y][x+15] = sLUT[0][_mm_extract_epi8(_intensity, 15)];
+				/*_scale_buf = _mm_set_epi8(sLUT[0][_mm_extract_epi8(_intensity, 15)],
+										sLUT[0][_mm_extract_epi8(_intensity, 14)],
+										sLUT[0][_mm_extract_epi8(_intensity, 13)],
+										sLUT[0][_mm_extract_epi8(_intensity, 12)],
+										sLUT[0][_mm_extract_epi8(_intensity, 11)],
+										sLUT[0][_mm_extract_epi8(_intensity, 10)],
+										sLUT[0][_mm_extract_epi8(_intensity, 9)],
+										sLUT[0][_mm_extract_epi8(_intensity, 8)],
+										sLUT[0][_mm_extract_epi8(_intensity, 7)],
+										sLUT[0][_mm_extract_epi8(_intensity, 6)],
+										sLUT[0][_mm_extract_epi8(_intensity, 5)],
+										sLUT[0][_mm_extract_epi8(_intensity, 4)],
+										sLUT[0][_mm_extract_epi8(_intensity, 3)],
+										sLUT[0][_mm_extract_epi8(_intensity, 2)],
+										sLUT[0][_mm_extract_epi8(_intensity, 1)],
+										sLUT[0][_mm_extract_epi8(_intensity, 0)]);*/
+				
+			}
+		}
+		
 		I16 += stride;
 	}
 
 	// Y: vertical overlap (merge lines over_buf with 0 & 1, then copy 16 & 17 to over_buf)
 	// problem: need to store 9-bits now ? or just clip ?
-
-	__m128i v_127 = _mm_set1_epi8(127);
-    __m128i v_neg_127 = _mm_set1_epi8(-127);
-	
+	/*
 	for (y=0; y<2 && overlap; y++)
 	{
 		__m128i _oc1 = _mm_set1_epi8(y ? 24 : 12); // current
@@ -708,19 +848,6 @@ void vfgs_add_grain_stripe_420_10bits(void* Y, void* U, void* V, unsigned y, uns
 			// store the result
             _mm_store_si128((__m128i *)&grain_buf[y][x], _g_clamp);
             _mm_store_si128((__m128i *)&over_buf[y][x], _g_clamp);
-		}
-	}
-	/*	
-	for (y=0; y<2 && overlap; y++)
-	{
-		uint8 oc1 = y ? 24 : 12; // current
-		uint8 oc2 = y ? 12 : 24; // previous
-		
-		for (x=0; x<width; x++)
-		{
-			int16 g = round(oc1*grain_buf[y][x] + oc2*over_buf[y][x], 5);
-			grain_buf[y][x] = max(-127, min(+127, g));
-			over_buf[y][x] = grain_buf[y][x];
 		}
 	}*/
 
@@ -747,38 +874,39 @@ void vfgs_add_grain_stripe_420_10bits(void* Y, void* U, void* V, unsigned y, uns
 
 	__m256i _Y_max = _mm256_set1_epi16(Y_max);
 	__m256i _Y_min = _mm256_set1_epi16(Y_min);
-	__m256i _scale_shift = _mm256_set1_epi16((short)scale_shift);
-
+	__m256i _Ymax2 = _mm256_slli_epi16(_Y_max, 2);
+	__m256i _Ymin2 = _mm256_slli_epi16(_Y_min, 2);
+    //__m256i _scale_shift = _mm256_set1_epi16((short)scale_shift);
+    __m256i _scale_shift = _mm256_set_epi32(0,0,0,0,0,0,0,(int)scale_shift);
+	
 	for(y=0; y<height; y++)
 	{
-        __m256i _I16 = _mm256_loadu_si256((__m256i*)&I16);
 		for(x=0; x<width; x+=16)
 		{
+			__m256i _I16 = _mm256_loadu_si256((__m256i*)&I16[x]);
 			__m128i _grain_buf = _mm_load_si128((__m128i *)&grain_buf[y][x]);
     		__m128i _scale_buf = _mm_load_si128((__m128i *)&scale_buf[y][x]);
 
 			//convert into 16bits values 
-			__m256i _grain_buf_16 = _mm256_cvtepi8_epi16(_grain_buf);
-			__m256i _scale_buf_16 = _mm256_cvtepi8_epi16(_scale_buf);
+            __m256i _grain_buf_16 = _mm256_cvtepu8_epi16(_grain_buf);
+            __m256i _scale_buf_16 = _mm256_cvtepu8_epi16(_scale_buf);
 
 			//perform the round operation
-			__m256i _mul = _mm256_mullo_epi16 (_scale_buf_16, _grain_buf_16);
-			__m256i _g = _m256_round_simd(_mul, _scale_shift);
+            __m256i _mul = _mm256_mullo_epi16 (_scale_buf_16, _grain_buf_16);
+            __m256i _g = _mm256_round_simd(_mul, _scale_shift);
 
 			// perform the clamp operation
 			__m256i _addig = _mm256_add_epi16(_I16, _g);
-			__m256i _Ymax2 = _mm256_slli_epi16(_Y_max, 2);
-			__m256i _Ymin2 = _mm256_slli_epi16(_Y_min, 2);
 			__m256i i_clampmin = _mm256_min_epi16(_addig, _Ymax2);
 			_I16 = _mm256_max_epi16(_Ymin2, i_clampmin);
 
 			// Store
-			 _mm256_storeu_ps((float*)&I16[x], (__m256)_I16);
+			_mm256_storeu_ps((float*)&I16[x], (__m256)_I16);
 		}
-		I16 += stride;
-	}
-	/*
-	for (y=0; y<height; y++)
+		I16 += stride; 
+    }
+    
+	/*for (y=0; y<height; y++)
 	{
 		for (x=0; x<width; x++)
 		{
@@ -787,7 +915,7 @@ void vfgs_add_grain_stripe_420_10bits(void* Y, void* U, void* V, unsigned y, uns
 			
 		}
 		I16 += stride;
-	}*/
+    }*/
 
 	// U
 	height_u = min(18, (height_u-y_base));
