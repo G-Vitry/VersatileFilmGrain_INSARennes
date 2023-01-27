@@ -5,6 +5,16 @@
 # Prerequisites
 *.d
 
+# Video files
+*.y4m
+*.yuv
+
+# Build folder for VLC plugin
+plugin_vlc/build
+
+# VLC in
+plugin_vlc/.vscode
+
 # Compiled Object files
 *.slo
 *.lo
