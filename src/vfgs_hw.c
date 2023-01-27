@@ -110,10 +110,14 @@ static_inline __m128i _round_simd(__m128i a, __m128i b) { // (4-6 cycles)
 __m256i _mm256_round_simd(__m256i a, __m256i b) { // (4-6 cycles)
 
     __m256i var_1 = _mm256_set1_epi16(1);
-    __m256i b_1 = (_mm256_sub_epi32(b,var_1));
-    __m256i l_1_shift = _mm256_llshft_epi16(var_1, b_1);
-    __m256i add_inter = _mm256_add_epi32(a, l_1_shift);
-    return _mm256_lrshft_epi16(add_inter, b);
+    __m256i b_1 = (_mm256_sub_epi16(b,var_1));
+    __m256i mask = _mm256_set_epi32(0,0,0,0,0,0,0,15);
+    __m256i b_1_masked = _mm256_and_si256(b_1, mask);
+    __m256i l_1_shift = _mm256_llshft_epi16(var_1, b_1_masked);
+    __m256i add_inter = _mm256_add_epi16(a, l_1_shift);
+    __m256i r_shift = _mm256_and_si256(b, mask);
+    __m256i res = _mm256_lrshft_epi16(add_inter, r_shift);
+    return res;
 }
 
 
@@ -552,7 +556,7 @@ void vfgs_add_grain_stripe_420_10bits(void* Y, void* U, void* V, unsigned y, uns
 	unsigned height_u = height;
 	unsigned height_v = height;
 
-	__m128i _intensity, _pi, _P, _piLUT_inter, _shift_4, _s, _shift_2, _scale_buf;
+	__m128i _intensity, _pi, _P, _P_prev, _piLUT_inter, _shift_4, _s, _shift_2, _scale_buf;
 	__m256i _intensity_inter;
 	__m128i v_127 = _mm_set1_epi8(127);
     __m128i v_neg_127 = _mm_set1_epi8(-127);
@@ -660,7 +664,6 @@ void vfgs_add_grain_stripe_420_10bits(void* Y, void* U, void* V, unsigned y, uns
 								pattern[0][_mm_extract_epi8(_pi, 0)][oy + y][ox + 0]);
 				_P = _mm_mullo_epi8(_P, _s);
 
-				_mm_store_si128((__m128i*)&grain_buf[y][x], _P);
 				
 				scale_buf[y][x] = sLUT[0][_mm_extract_epi8(_intensity, 0)];
 				scale_buf[y][x+1] = sLUT[0][_mm_extract_epi8(_intensity, 1)];
@@ -877,23 +880,26 @@ void vfgs_add_grain_stripe_420_10bits(void* Y, void* U, void* V, unsigned y, uns
 	__m256i _Ymax2 = _mm256_slli_epi16(_Y_max, 2);
 	__m256i _Ymin2 = _mm256_slli_epi16(_Y_min, 2);
     //__m256i _scale_shift = _mm256_set1_epi16((short)scale_shift);
-    __m256i _scale_shift = _mm256_set_epi32(0,0,0,0,0,0,0,(int)scale_shift);
-	
+    __m256i _scale_shift = _mm256_set1_epi16((int)scale_shift);
+    __m256i _v256_neg_127 = _mm256_set1_epi16(-128);
+
+	/*
 	for(y=0; y<height; y++)
 	{
 		for(x=0; x<width; x+=16)
 		{
-			__m256i _I16 = _mm256_loadu_si256((__m256i*)&I16[x]);
+            __m256i _I16 = _mm256_load_si256((__m256i*)&I16[x]);
 			__m128i _grain_buf = _mm_load_si128((__m128i *)&grain_buf[y][x]);
     		__m128i _scale_buf = _mm_load_si128((__m128i *)&scale_buf[y][x]);
 
 			//convert into 16bits values 
-            __m256i _grain_buf_16 = _mm256_cvtepu8_epi16(_grain_buf);
-            __m256i _scale_buf_16 = _mm256_cvtepu8_epi16(_scale_buf);
+            __m256i _grain_buf_16 = _mm256_cvtepi8_epi16(_grain_buf);
+            __m256i _scale_buf_16 = _mm256_cvtepi8_epi16(_scale_buf);
 
 			//perform the round operation
             __m256i _mul = _mm256_mullo_epi16 (_scale_buf_16, _grain_buf_16);
             __m256i _g = _mm256_round_simd(_mul, _scale_shift);
+
 
 			// perform the clamp operation
 			__m256i _addig = _mm256_add_epi16(_I16, _g);
@@ -901,12 +907,12 @@ void vfgs_add_grain_stripe_420_10bits(void* Y, void* U, void* V, unsigned y, uns
 			_I16 = _mm256_max_epi16(_Ymin2, i_clampmin);
 
 			// Store
-			_mm256_storeu_ps((float*)&I16[x], (__m256)_I16);
+            _mm256_storeu_si256((__m256i*)&I16[x], (__m256i)_I16);
 		}
 		I16 += stride; 
-    }
+    }*/
     
-	/*for (y=0; y<height; y++)
+    for (y=0; y<height; y++)
 	{
 		for (x=0; x<width; x++)
 		{
@@ -915,7 +921,7 @@ void vfgs_add_grain_stripe_420_10bits(void* Y, void* U, void* V, unsigned y, uns
 			
 		}
 		I16 += stride;
-    }*/
+    }
 
 	// U
 	height_u = min(18, (height_u-y_base));
