@@ -81,18 +81,19 @@ static picture_t *Filter(filter_t *p_filter, picture_t *p_pic_in)
     if (!p_sys->b_enabled)
     {
         msg_Dbg(p_filter, N_("In Filter function b_enabled is False"));
-        picture_Release(p_pic_in); //If it doesn't work, only return p_pic_in and comment this line.
-        return NULL;
+        
+        // If it doesn't work, only return p_pic_in and comment this line.
+        return p_pic_in;
     }
 
-    //msg_Dbg(p_filter, N_("In Filter function b_enabled is True"));
+    // msg_Dbg(p_filter, N_("In Filter function b_enabled is True"));
 
     picture_t *p_pic_out = filter_NewPicture(p_filter);
     if (!p_pic_out)
     {
         msg_Err(p_filter, N_("Failed to allocate p_pic_out"));
         picture_Release(p_pic_in);
-        return NULL;
+        return p_pic_in;
     }
     
     //msg_Dbg(p_filter, N_("In Filter p_pic_out has been allocated"));
