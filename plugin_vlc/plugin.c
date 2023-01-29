@@ -28,6 +28,29 @@ typedef SSIZE_T ssize_t;
 const char *const ppsz_filter_options[] = {
     "enabled", "grain-amount", NULL};
 
+static int supportedChroma(vlc_fourcc_t *i_chroma){
+    /**
+     * Return 1 if the chroma input is into the supported chromas
+     * @i_chroma chroma to be found
+    */
+    const vlc_fourcc_t supported_formats[] = 
+        {VLC_CODEC_I420, VLC_CODEC_I420_10B,
+         VLC_CODEC_I422, VLC_CODEC_I422_10B,
+         VLC_CODEC_I444, VLC_CODEC_I444_10B
+        };
+    int len = sizeof(supported_formats) / sizeof(supported_formats[0]);
+    int i;
+    for (i = 0; i < len; i++)
+    {
+        if (supported_formats[i] == i_chroma)
+        {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+
 static int Open(vlc_object_t *p_this)
 {
     msg_Dbg(p_this, N_("Open function"));
@@ -36,12 +59,19 @@ static int Open(vlc_object_t *p_this)
     const vlc_chroma_description_t *chroma =
         vlc_fourcc_GetChromaDescription(p_filter->fmt_in.video.i_chroma); //Set information about chroma -> i_planes
 
-    // Check the chroma format
-    if (!chroma || chroma->plane_count < 3 || chroma->pixel_size != 1) {
+    // Showing the video format in integer and their equivalent in char
+    const vlc_fourcc_t *i_chroma = p_filter->fmt_in.video.i_chroma;
+
+    // Check that the chroma has a correct format
+    // Check if the chroma format is one of the supported formats available for the Intergrain plugin
+    if (!chroma || chroma->plane_count < 3 || chroma->pixel_size != 1 || !supportedChroma(i_chroma))
+    {
         msg_Err(p_filter, "Unsupported chroma (%4.4s)",
-                (char*)&(p_filter->fmt_in.video.i_chroma));
+                (char*)&(i_chroma));
         return VLC_EGENERIC;
     }
+
+    msg_Info(p_this, N_("The chroma format is: (%4.4s), it is supported!"), (char*)&i_chroma);
 
     // Memory allocation
     my_filter_sys_t *p_sys = p_filter->p_sys = malloc(sizeof(*p_sys));
@@ -59,7 +89,7 @@ static int Open(vlc_object_t *p_this)
 
     p_filter->pf_video_filter = Filter;
     vlc_mutex_init(&p_sys->lock);
-    msg_Dbg(p_filter, N_("Plugin InterGrain chargé"));
+    msg_Dbg(p_filter, N_("Plugin InterGrain charged"));
 
     return VLC_SUCCESS;
 }
@@ -86,7 +116,9 @@ static picture_t *Filter(filter_t *p_filter, picture_t *p_pic_in)
         return p_pic_in;
     }
 
-    // msg_Dbg(p_filter, N_("In Filter function b_enabled is True"));
+    //msg_Dbg(p_filter, N_("In Filter function b_enabled is True"));
+    //msg_Dbg(p_filter, N_("Input format: %s"), p_pic_in->format.chroma_location);
+
 
     picture_t *p_pic_out = filter_NewPicture(p_filter);
     if (!p_pic_out)
