@@ -12,6 +12,9 @@ include_directories(${VLC_SDK}/include)
 include_directories(${VLC_SDK}/include/vlc/plugins)
 include_directories(../src)
 
+if( UNIX OR MINGW )
+  add_compile_options( "-mavx2" )
+endif()
 
 #Define plugin sources and lib
 set(SOURCES plugin.c plugin.h)

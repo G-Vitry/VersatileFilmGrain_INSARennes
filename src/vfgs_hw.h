@@ -63,7 +63,6 @@ void vfgs_add_grain_line(void* Y, void* U, void* V, int y, int width);
 void vfgs_add_grain_stripe(void* Y, void* U, void* V, unsigned y, unsigned width, unsigned height, unsigned stride, unsigned cstride);
 void wrapper_add_grain_stripe(void* Y, void* U, void* V, unsigned y, unsigned width, unsigned height, unsigned stride, unsigned cstride);
 
-void (*ptr_add_grain_stripe)(void* Y, void* U, void* V, unsigned y, unsigned width, unsigned height, unsigned stride, unsigned cstride);
 void vfgs_add_grain_stripe_420_8bits(void* Y, void* U, void* V, unsigned y, unsigned width, unsigned height, unsigned stride, unsigned cstride);
 void vfgs_add_grain_stripe_420_10bits(void* Y, void* U, void* V, unsigned y, unsigned width, unsigned height, unsigned stride, unsigned cstride);
 void vfgs_add_grain_stripe_422_8bits(void* Y, void* U, void* V, unsigned y, unsigned width, unsigned height, unsigned stride, unsigned cstride);

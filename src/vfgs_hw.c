@@ -34,13 +34,15 @@
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include "vfgs_hw.h"
+
 #include <string.h> // memcpy
 #include <assert.h>
 #include <stdio.h>
 
 #include <emmintrin.h>
 #include <immintrin.h>
+
+#include "vfgs_hw.h"
 
 #define min(a,b) ((a)<(b)?(a):(b))
 #define max(a,b) ((a)>(b)?(a):(b))
@@ -119,6 +121,8 @@ __m256i _mm256_round_simd(__m256i a, __m256i b) { // (4-6 cycles)
     __m256i res = _mm256_lrshft_epi16(add_inter, r_shift);
     return res;
 }
+
+void (*ptr_add_grain_stripe)(void* Y, void* U, void* V, unsigned y, unsigned width, unsigned height, unsigned stride, unsigned cstride);
 
 // Note: declarations optimized for code readability; e.g. pattern storage in
 //       actual hardware implementation would differ significantly
@@ -295,10 +299,10 @@ void vfgs_add_grain_stripe_420_8bits(void* Y, void* U, void* V, unsigned y, unsi
             uint8 ox = offset_x[Y_index][x/16];
             uint8 oy = offset_y[Y_index][x/16];
 
-            __m128i _intensity,ptr_add_grain_stripe _pi, _P, _piLUT_inter, _shift, _s;
+            __m128i _intensity, _pi, _P, _piLUT_inter, _shift, _s;
             _shift = _mm_set1_epi8(4);
             _s = _mm_set1_epi8(sign[0][x/16]);
-            _intensity = _mm_loadu_si128((__m128i*)&I8[x]);
+            _intensity = _mm_load_si128((__m128i*)&I8[x]);
 
             _piLUT_inter = _mm_set_epi8(pLUT[0][_mm_extract_epi8(_intensity, 15)],
                                         pLUT[0][_mm_extract_epi8(_intensity, 14)],

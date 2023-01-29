@@ -29,6 +29,7 @@ typedef SSIZE_T ssize_t;
 #define HELP_STR "Add random grain to the image"
 
 static char depth;
+void (*ptr_add_grain)(void* Y, void* U, void* V, unsigned y, unsigned width, unsigned height, unsigned stride, unsigned cstride);
 
 const char *const ppsz_filter_options[] = {
     "enabled", "grain-amount", NULL};
@@ -80,32 +81,32 @@ static int Open(vlc_object_t *p_this)
     // Calling the add_grain function corresponding with the chroma format
     if(i_chroma == VLC_CODEC_I420)
     {
-        ptr_add_grain_stripe = vfgs_add_grain_stripe_420_8bits;
+        ptr_add_grain = vfgs_add_grain_stripe_420_8bits;
         depth = 1;
     } 
     else if(i_chroma == VLC_CODEC_I420_10B)
     {
-        ptr_add_grain_stripe = vfgs_add_grain_stripe_420_10bits;
+        ptr_add_grain = vfgs_add_grain_stripe_420_10bits;
         depth = 2;
     } 
     else if(i_chroma == VLC_CODEC_I422)
     {
-        ptr_add_grain_stripe = vfgs_add_grain_stripe_422_8bits;
+        ptr_add_grain = vfgs_add_grain_stripe_422_8bits;
         depth = 1;
     }
     else if(i_chroma == VLC_CODEC_I422_10B)
     {
-        ptr_add_grain_stripe = vfgs_add_grain_stripe_422_10bits;
+        ptr_add_grain = vfgs_add_grain_stripe_422_10bits;
         depth = 2;
     } 
     else if(i_chroma == VLC_CODEC_I444)
     {
-        ptr_add_grain_stripe = vfgs_add_grain_stripe_444_8bits;
+        ptr_add_grain = vfgs_add_grain_stripe_444_8bits;
         depth = 1;
     } 
     else if(i_chroma == VLC_CODEC_I444_10B)
     {
-        ptr_add_grain_stripe = vfgs_add_grain_stripe_444_10bits;
+        ptr_add_grain = vfgs_add_grain_stripe_444_10bits;
         depth = 2;
     }
 
@@ -161,24 +162,31 @@ static picture_t *Filter(filter_t *p_filter, picture_t *p_pic_in)
         picture_Release(p_pic_in);
         return p_pic_in;
     }
+
+    msg_Dbg(p_filter, N_("Before *p_pic_out = *p_pic_in"));
+    *p_pic_out = *p_pic_in;
+    msg_Dbg(p_filter, N_("After *p_pic_out = *p_pic_in"));
     
-    if (p_pic_in->i_planes != 0) 
+    if (p_pic_out->i_planes != 0) 
     {           
-        u_int32_t *Y = p_pic_in->p[0].p_pixels;
-        u_int32_t *U = p_pic_in->p[1].p_pixels;
-        u_int32_t *V = p_pic_in->p[2].p_pixels;
-        unsigned int width = p_pic_in->format.i_width;
-        unsigned int heigth = p_pic_in->format.i_height;
+        u_int32_t *Y = p_pic_out->p[0].p_pixels;
+        u_int32_t *U = p_pic_out->p[1].p_pixels;
+        u_int32_t *V = p_pic_out->p[2].p_pixels;
+        unsigned int width = p_pic_out->format.i_width;
+        unsigned int heigth = p_pic_out->format.i_height;
         // stride
-        unsigned int stride = p_pic_in->p[0].i_pixel_pitch;
+        unsigned int stride = p_pic_out->p[0].i_pitch;
+        msg_Dbg(p_filter, "Stride: %d", stride);
         // cstride
-        unsigned int cstride = p_pic_in->p[1].i_pixel_pitch;
+        unsigned int cstride = p_pic_out->p[1].i_pitch;
+        msg_Dbg(p_filter, "Cstride: %d", cstride);
         
 
-        for (int y = 0; y < p_pic_in->p[0].i_visible_lines; y+=16)
+        for (int y = 0; y < p_pic_out->p[0].i_visible_lines; y+=16)
         {
-            
-            ptr_add_grain_stripe(Y, U, V, y, width, heigth, stride, cstride);
+            msg_Dbg(p_filter, N_("Before calling add_grain, iteration y=%d"), y);
+            ptr_add_grain(Y, U, V, y, width, heigth, stride, cstride);
+            msg_Dbg(p_filter, N_("After calling add_grain, iteration y=%d"), y);
             Y += 16*stride*depth;
             U += 16*cstride*depth;
             V += 16*cstride*depth;
