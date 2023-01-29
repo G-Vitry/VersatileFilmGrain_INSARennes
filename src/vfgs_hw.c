@@ -120,9 +120,6 @@ __m256i _mm256_round_simd(__m256i a, __m256i b) { // (4-6 cycles)
     return res;
 }
 
-
-void (*ptr_add_grain_stripe)(void* Y, void* U, void* V, unsigned y, unsigned width, unsigned height, unsigned stride, unsigned cstride);
-
 // Note: declarations optimized for code readability; e.g. pattern storage in
 //       actual hardware implementation would differ significantly
 static int8 pattern[2][VFGS_MAX_PATTERNS+1][64][64] = {0, }; // +1 to simplify interpolation code
@@ -298,7 +295,7 @@ void vfgs_add_grain_stripe_420_8bits(void* Y, void* U, void* V, unsigned y, unsi
             uint8 ox = offset_x[Y_index][x/16];
             uint8 oy = offset_y[Y_index][x/16];
 
-            __m128i _intensity, _pi, _P, _piLUT_inter, _shift, _s;
+            __m128i _intensity,ptr_add_grain_stripe _pi, _P, _piLUT_inter, _shift, _s;
             _shift = _mm_set1_epi8(4);
             _s = _mm_set1_epi8(sign[0][x/16]);
             _intensity = _mm_loadu_si128((__m128i*)&I8[x]);

@@ -15,6 +15,9 @@ typedef SSIZE_T ssize_t;
 
 #include "plugin.h"
 
+// Including the vfgs project
+#include "../src/vfgs_hw.h"
+
 /* Internationalization */
 #define DOMAIN "intergrain"
 #define _(str) dgettext(DOMAIN, str)
@@ -24,6 +27,8 @@ typedef SSIZE_T ssize_t;
 #define MY_FILTER_NAME "Test Grain Filter"
 #define FILTER_PREFIX "intergrain-"
 #define HELP_STR "Add random grain to the image"
+
+static char depth;
 
 const char *const ppsz_filter_options[] = {
     "enabled", "grain-amount", NULL};
@@ -50,7 +55,6 @@ static int supportedChroma(vlc_fourcc_t *i_chroma){
     return 0;
 }
 
-
 static int Open(vlc_object_t *p_this)
 {
     msg_Dbg(p_this, N_("Open function"));
@@ -72,6 +76,40 @@ static int Open(vlc_object_t *p_this)
     }
 
     msg_Info(p_this, N_("The chroma format is: (%4.4s), it is supported!"), (char*)&i_chroma);
+
+    // Calling the add_grain function corresponding with the chroma format
+    if(i_chroma == VLC_CODEC_I420)
+    {
+        ptr_add_grain_stripe = vfgs_add_grain_stripe_420_8bits;
+        depth = 1;
+    } 
+    else if(i_chroma == VLC_CODEC_I420_10B)
+    {
+        ptr_add_grain_stripe = vfgs_add_grain_stripe_420_10bits;
+        depth = 2;
+    } 
+    else if(i_chroma == VLC_CODEC_I422)
+    {
+        ptr_add_grain_stripe = vfgs_add_grain_stripe_422_8bits;
+        depth = 1;
+    }
+    else if(i_chroma == VLC_CODEC_I422_10B)
+    {
+        ptr_add_grain_stripe = vfgs_add_grain_stripe_422_10bits;
+        depth = 2;
+    } 
+    else if(i_chroma == VLC_CODEC_I444)
+    {
+        ptr_add_grain_stripe = vfgs_add_grain_stripe_444_8bits;
+        depth = 1;
+    } 
+    else if(i_chroma == VLC_CODEC_I444_10B)
+    {
+        ptr_add_grain_stripe = vfgs_add_grain_stripe_444_10bits;
+        depth = 2;
+    }
+
+    msg_Dbg(p_this, N_("The value of the depth is: (%d)"), depth);
 
     // Memory allocation
     my_filter_sys_t *p_sys = p_filter->p_sys = malloc(sizeof(*p_sys));
@@ -105,7 +143,7 @@ static void Close(vlc_object_t *p_this)
 }
 
 static picture_t *Filter(filter_t *p_filter, picture_t *p_pic_in)
-{
+{    
     my_filter_sys_t *p_sys = p_filter->p_sys;
 
     if (!p_sys->b_enabled)
@@ -116,10 +154,6 @@ static picture_t *Filter(filter_t *p_filter, picture_t *p_pic_in)
         return p_pic_in;
     }
 
-    //msg_Dbg(p_filter, N_("In Filter function b_enabled is True"));
-    //msg_Dbg(p_filter, N_("Input format: %s"), p_pic_in->format.chroma_location);
-
-
     picture_t *p_pic_out = filter_NewPicture(p_filter);
     if (!p_pic_out)
     {
@@ -128,38 +162,28 @@ static picture_t *Filter(filter_t *p_filter, picture_t *p_pic_in)
         return p_pic_in;
     }
     
-    //msg_Dbg(p_filter, N_("In Filter p_pic_out has been allocated"));
-    //msg_Dbg(p_filter, N_("Number of planes: %d"), p_pic_in->i_planes);
     if (p_pic_in->i_planes != 0) 
-    {
-        for (int i = 0; i < p_pic_in->i_planes; i++)
+    {           
+        u_int32_t *Y = p_pic_in->p[0].p_pixels;
+        u_int32_t *U = p_pic_in->p[1].p_pixels;
+        u_int32_t *V = p_pic_in->p[2].p_pixels;
+        unsigned int width = p_pic_in->format.i_width;
+        unsigned int heigth = p_pic_in->format.i_height;
+        // stride
+        unsigned int stride = p_pic_in->p[0].i_pixel_pitch;
+        // cstride
+        unsigned int cstride = p_pic_in->p[1].i_pixel_pitch;
+        
+
+        for (int y = 0; y < p_pic_in->p[0].i_visible_lines; y+=16)
         {
-            //msg_Dbg(p_filter, N_("In plane: %d"), i);
-            const int i_src_pitch = p_pic_in->p[i].i_pitch;
-            const int i_src_visible_pitch = p_pic_in->p[i].i_visible_pitch;
-            const int i_src_visible_lines = p_pic_in->p[i].i_visible_lines;
-            /*msg_Dbg(p_filter, N_("Pitch: %d"), i_src_pitch);
-            msg_Dbg(p_filter, N_("Visible pitch: %d"), i_src_visible_pitch);
-            msg_Dbg(p_filter, N_("Visible lines: %d"), i_src_visible_lines);*/
-
-            const uint8_t *p_src = p_pic_in->p[i].p_pixels;
-            uint8_t *p_dst = p_pic_out->p[i].p_pixels;
-
-            for (int y = 0; y < i_src_visible_lines; y++)
-            {
-                for (int x = 0; x < i_src_visible_pitch; x++)
-                {
-                    char sign = rand() % 10 > 5 ? 1 : -1; // Random sign. Probably costly due to the call to rand.
-                    vlc_mutex_lock(&p_sys->lock);
-                    int i_grain = p_sys->i_grain_amount > 0 ? sign * (rand() % p_sys->i_grain_amount) : 0; //Also costly due to the call to rand.
-                    vlc_mutex_unlock(&p_sys->lock);
-                    p_dst[x] = VLC_CLIP(p_src[x] + i_grain, 0, 255);
-                }
-                p_src += i_src_pitch;
-                p_dst += i_src_pitch;
-                /*msg_Dbg(p_filter, "Image Filtered");*/
-            }
+            
+            ptr_add_grain_stripe(Y, U, V, y, width, heigth, stride, cstride);
+            Y += 16*stride*depth;
+            U += 16*cstride*depth;
+            V += 16*cstride*depth;
         }
+        
         picture_CopyProperties(p_pic_out, p_pic_in);
         picture_Release(p_pic_in); //Decrement refs count. When it reaches 0, the picture is automatically destroyed (freed)
         return p_pic_out;
@@ -169,6 +193,7 @@ static picture_t *Filter(filter_t *p_filter, picture_t *p_pic_in)
         picture_Release(p_pic_out);
         return p_pic_in;
     }
+    
 }
 
 static int FilterCallback(vlc_object_t *p_this, char const *psz_var,
