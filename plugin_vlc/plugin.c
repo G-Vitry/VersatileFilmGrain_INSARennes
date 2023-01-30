@@ -17,6 +17,7 @@ typedef SSIZE_T ssize_t;
 
 // Including the vfgs project
 #include "../src/vfgs_hw.h"
+#include "../src/vfgs_fw.h"
 
 /* Internationalization */
 #define DOMAIN "intergrain"
@@ -33,6 +34,61 @@ void (*ptr_add_grain)(void* Y, void* U, void* V, unsigned y, unsigned width, uns
 
 const char *const ppsz_filter_options[] = {
     "enabled", "grain-amount", NULL};
+
+
+static fgs_sei sei = {
+	.model_id = 0,
+	.log2_scale_factor = 5,
+	.comp_model_present_flag = { 1, 1, 1 },
+	.num_intensity_intervals = { 8, 8, 8 },
+	.num_model_values = { 3, 3, 3 },
+	.intensity_interval_lower_bound = {
+		{  0, 40,  60,  80, 100, 120, 140, 160 },
+		{  0, 64,  96, 112, 128, 144, 160, 192 },
+		{  0, 64,  96, 112, 128, 144, 160, 192 }
+	},
+	.intensity_interval_upper_bound = {
+		{ 39, 59,  79,  99, 119, 139, 159, 255 },
+		{ 63, 95, 111, 127, 143, 159, 191, 255 },
+		{ 63, 95, 111, 127, 143, 159, 191, 255 }
+	},
+	.comp_model_value = {
+		// luma (scale / h / v)
+		{
+			{ 100,  7,  7 },
+			{ 100,  8,  8 },
+			{ 100,  9,  9 },
+			{ 110, 10, 10 },
+			{ 120, 11, 11 },
+			{ 135, 12, 12 },
+			{ 145, 13, 13 },
+			{ 180, 14, 14 },
+		},
+		// Cb
+		{
+			{ 128, 8, 8 },
+			{  96, 8, 8 },
+			{  64, 8, 8 },
+			{  64, 8, 8 },
+			{  64, 8, 8 },
+			{  64, 8, 8 },
+			{  96, 8, 8 },
+			{ 128, 8, 8 },
+		},
+		// Cr
+		{
+			{ 128, 8, 8 },
+			{  96, 8, 8 },
+			{  64, 8, 8 },
+			{  64, 8, 8 },
+			{  64, 8, 8 },
+			{  64, 8, 8 },
+			{  96, 8, 8 },
+			{ 128, 8, 8 },
+		},
+	}
+};
+
 
 static int supportedChroma(vlc_fourcc_t *i_chroma){
     /**
@@ -109,6 +165,8 @@ static int Open(vlc_object_t *p_this)
         ptr_add_grain = vfgs_add_grain_stripe_444_10bits;
         depth = 2;
     }
+
+    vfgs_init_sei(&sei);
 
     msg_Dbg(p_this, N_("The value of the depth is: (%d)"), depth);
 
